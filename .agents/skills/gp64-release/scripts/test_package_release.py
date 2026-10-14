@@ -182,6 +182,8 @@ class PackageReleaseTests(unittest.TestCase):
             (crate / "Cargo.toml").write_text("[package]\nname='demo'\n", encoding="utf-8")
             (crate / "LICENSE-MIT").write_text("MIT text from crate\n", encoding="utf-8")
             (crate / "docs" / "NOTICE.txt").write_text("copyright notice\n", encoding="utf-8")
+            # A port can keep its upstream's BSD notice here (rvp9 does for libvpx).
+            (crate / "ATTRIBUTION.md").write_text("upstream copyright notice\n", encoding="utf-8")
             package = {
                 "name": "demo",
                 "version": "1.2.3",
@@ -195,6 +197,7 @@ class PackageReleaseTests(unittest.TestCase):
             self.assertEqual(
                 {item["archive_path"] for item in direct},
                 {
+                    "dependency-notices/demo-1.2.3/ATTRIBUTION.md",
                     "dependency-notices/demo-1.2.3/LICENSE-MIT",
                     "dependency-notices/demo-1.2.3/docs/NOTICE.txt",
                 },

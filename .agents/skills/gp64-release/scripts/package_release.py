@@ -85,6 +85,7 @@ LEGAL_NAME_MARKERS = (
     "authors",
     "credits",
     "patents",
+    "attribution",
 )
 
 
