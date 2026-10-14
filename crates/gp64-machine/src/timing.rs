@@ -177,7 +177,7 @@ impl Timeline {
             .filter_map(gp64_hw::serial::SerialPort::next_deadline)
             .min();
         self.schedule(Event::Uart, deadline);
-        let (irq4, irq3) = io.serial.check_interrupts();
+        let (irq3, irq4) = io.serial.check_interrupts();
         io.pic
             .set_irq_source(4, gp64_hw::pic::PicIrqSource::Serial, irq4);
         io.pic
@@ -415,6 +415,28 @@ mod tests {
             pit_write(&mut io, &mut timeline, 0x40, value);
         }
         (io, timeline)
+    }
+
+    /// COM1 and COM3 interrupt on IRQ4, COM2 and COM4 on IRQ3.
+    #[test]
+    fn each_com_port_interrupts_on_its_own_irq() {
+        for (base, irq, other) in [(0x2F8u16, 3u8, 4u8), (0x3F8, 4, 3)] {
+            let mut io = IoBus::new();
+            let rate = u64::from(io.pit.pit_hz());
+            let mut timeline = Timeline::new(rate, &mut io);
+            // OUT2 gates the UART's interrupt line; ETBEI raises THRE at once.
+            for (offset, value) in [(4, 0x08), (1, 0x02)] {
+                io.write_u8(base + offset, value);
+                timeline.after_write(&mut io, base + offset, value);
+            }
+            let lines = io.pic.diagnostic_snapshot().master.irq_line;
+            assert_ne!(lines & (1 << irq), 0, "{base:03X} must raise IRQ{irq}");
+            assert_eq!(
+                lines & (1 << other),
+                0,
+                "{base:03X} must not raise IRQ{other}"
+            );
+        }
     }
 
     #[test]
