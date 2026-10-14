@@ -145,6 +145,38 @@ fn run() -> Result<u8> {
     }
     app.result.map_err(anyhow::Error::msg)
 }
+/// Shown in the title while the mouse is captured.
+const MOUSE_HINT: &str = "Ctrl+F10 frees mouse";
+/// The window title: the program, CPU usage, then any hints and messages.
+fn title_text(
+    program: &str,
+    usage: Option<u32>,
+    captured: bool,
+    sound_hint: bool,
+    message: Option<&str>,
+) -> String {
+    let mut title = if program.is_empty() {
+        "gp64".into()
+    } else {
+        format!("gp64 - {program}")
+    };
+    if let Some(usage) = usage {
+        title.push_str(&format!(" - CPU {usage}%"));
+    }
+    if captured {
+        title.push_str(" - ");
+        title.push_str(MOUSE_HINT);
+    }
+    if sound_hint {
+        title.push_str(" - ");
+        title.push_str(SOUND_HINT);
+    }
+    if let Some(message) = message {
+        title.push_str(" - ");
+        title.push_str(message);
+    }
+    title
+}
 struct App {
     launch: Option<(Options, PathBuf, Option<String>)>,
     proxy: winit::event_loop::EventLoopProxy<Notice>,
@@ -193,23 +225,13 @@ impl App {
     }
     fn title(&self) {
         if let Some(window) = &self.window {
-            let mut title = if self.program.is_empty() {
-                "gp64".into()
-            } else {
-                format!("gp64 - {}", self.program)
-            };
-            if let Some(usage) = self.usage {
-                title.push_str(&format!(" - CPU {usage}%"));
-            }
-            if self.hint_until.is_some() {
-                title.push_str(" - ");
-                title.push_str(SOUND_HINT);
-            }
-            if let Some((message, _)) = &self.message {
-                title.push_str(" - ");
-                title.push_str(message);
-            }
-            window.set_title(&title);
+            window.set_title(&title_text(
+                &self.program,
+                self.usage,
+                self.captured,
+                self.hint_until.is_some(),
+                self.message.as_ref().map(|(message, _)| message.as_str()),
+            ));
         }
     }
     fn release_mouse(&mut self) {
@@ -217,13 +239,16 @@ impl App {
             let _ = window.set_cursor_grab(CursorGrabMode::None);
             window.set_cursor_visible(true);
         }
-        self.captured = false;
+        let was_captured = std::mem::replace(&mut self.captured, false);
         self.motion = (0.0, 0.0);
         for button in 0..3 {
             if self.buttons[button] {
                 self.send(Input::Button(button as u8, false));
                 self.buttons[button] = false;
             }
+        }
+        if was_captured {
+            self.title();
         }
     }
     fn capture_mouse(&mut self) {
@@ -235,6 +260,9 @@ impl App {
                 self.captured = true;
                 window.set_cursor_visible(false);
             }
+        }
+        if self.captured {
+            self.title();
         }
     }
     fn fullscreen(&self) -> bool {
@@ -653,6 +681,22 @@ impl ApplicationHandler<Notice> for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn title_shows_the_mouse_hint_only_while_captured() {
+        assert_eq!(
+            title_text("GP.EXE", Some(80), true, false, None),
+            "gp64 - GP.EXE - CPU 80% - Ctrl+F10 frees mouse"
+        );
+        assert_eq!(
+            title_text("GP.EXE", Some(80), false, false, None),
+            "gp64 - GP.EXE - CPU 80%"
+        );
+        assert_eq!(
+            title_text("", None, true, false, Some("saved")),
+            "gp64 - Ctrl+F10 frees mouse - saved"
+        );
+    }
 
     #[test]
     fn shutdown_error_is_reported_with_failure_exit() {
