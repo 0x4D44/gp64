@@ -1,0 +1,22 @@
+version = 1
+
+# Versions change only when the maintainer selects a new release version.
+version_bump = "release-only"
+manual = [
+  { program = "cargo", args = ["fmt", "--all", "--", "--check"] },
+]
+
+fallback = [
+  { program = "cargo", args = ["fmt", "--all", "--", "--check"] },
+  { program = "cargo", args = ["clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"] },
+  { program = "cargo", args = ["test", "--workspace", "--locked"] },
+]
+
+[[component]]
+name = "workspace"
+paths = ["crates/"]
+gate = [
+  { program = "cargo", args = ["fmt", "--all", "--", "--check"] },
+  { program = "cargo", args = ["clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"] },
+  { program = "cargo", args = ["test", "--workspace", "--locked"] },
+]
