@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Build deterministic local gp64 release archives and licence bundles."""
+"""Build and verify deterministic gp64 release archives: executable plus licence texts."""
 
 import argparse
 import gzip
 import hashlib
+import io
 import json
 import os
 import platform
 import re
-import shutil
 import stat
 import struct
 import subprocess
@@ -33,6 +33,7 @@ class HostTarget:
     target: str
     binary_name: str
     archive_suffix: str
+    archive_extension: str
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,6 @@ class Checkout:
     revision: str
     version: str
     commit_time: int
-    metadata: dict
 
 
 SUPPORTED_HOSTS = {
@@ -51,14 +51,22 @@ SUPPORTED_HOSTS = {
         target="x86_64-pc-windows-msvc",
         binary_name="gp64.exe",
         archive_suffix="windows-x86_64",
+        archive_extension=".zip",
     ),
     "macos-arm64": HostTarget(
         platform_name="macos-arm64",
         target="aarch64-apple-darwin",
         binary_name="gp64",
         archive_suffix="macos-arm64",
+        archive_extension=".tar.gz",
     ),
 }
+
+LICENSE_NAME = "LICENSE"
+THIRD_PARTY_NAME = "THIRD_PARTY_LICENSES.txt"
+# Combined licence file: these lead, every other document follows in path order.
+LEADING_DOCUMENTS = ("NOTICE", "THIRD_PARTY_NOTICES.md")
+GPL_MARKER = b"GNU GENERAL PUBLIC LICENSE"
 
 TAG_RE = re.compile(
     r"^v(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$"
@@ -66,7 +74,8 @@ TAG_RE = re.compile(
 REVISION_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 PACKAGE_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
 VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]*$")
-PUBLIC_SCP_ORIGIN_RE = re.compile(r"^git@github\.com:0x4D44/gp64\.git$", re.IGNORECASE)
+PUBLIC_SCP_ORIGIN_RE = re.compile(r"^git@github\.com:0x4D44/gp64(?:\.git)?$", re.IGNORECASE)
+PUBLIC_ORIGIN_PATHS = ("/0x4D44/gp64", "/0x4D44/gp64.git")
 LEGAL_NAME_MARKERS = (
     "license",
     "licence",
@@ -99,6 +108,7 @@ def verify_binary_architecture(binary_path, platform_name):
     except OSError as exc:
         raise PackagingError("prebuilt binary could not be read") from exc
     verify_binary_bytes(data, platform_name)
+    return data
 
 
 def verify_binary_bytes(data, platform_name):
@@ -225,7 +235,7 @@ def _is_official_public_origin(value):
         parts = urlsplit(value)
         if parts.hostname is None or parts.hostname.casefold() != "github.com":
             return False
-        if parts.path != "/0x4D44/gp64.git" or parts.query or parts.fragment:
+        if parts.path not in PUBLIC_ORIGIN_PATHS or parts.query or parts.fragment:
             return False
         if parts.scheme == "https":
             return parts.username is None and parts.password is None and parts.port is None
@@ -290,25 +300,29 @@ def validate_checkout(repo_root, tag, revision):
         commit_time = int(commit_time_text)
     except ValueError as exc:
         raise PackagingError("git returned an invalid source commit time") from exc
-    return Checkout(root, tag, provided_revision, version, commit_time, no_deps)
+    return Checkout(root, tag, provided_revision, version, commit_time)
 
 
-def load_full_metadata(root):
+def load_target_metadata(root, target):
+    """Locked metadata limited to the packages Cargo resolves for one target."""
     try:
         metadata = json.loads(
             _run(
-                ["cargo", "metadata", "--locked", "--offline", "--format-version", "1"],
+                [
+                    "cargo", "metadata", "--locked", "--offline",
+                    "--filter-platform", target, "--format-version", "1",
+                ],
                 root,
-                "full cargo metadata",
+                "cargo metadata for {}".format(target),
             )
         )
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise PackagingError("full cargo metadata returned invalid JSON") from exc
+        raise PackagingError("cargo metadata returned invalid JSON") from exc
     if metadata.get("workspace_root") != str(Path(root).resolve()):
         raise PackagingError("cargo metadata resolved a different workspace")
     packages = metadata.get("packages")
     if not isinstance(packages, list) or not packages:
-        raise PackagingError("full cargo metadata did not include locked packages")
+        raise PackagingError("cargo metadata did not include locked packages")
     return metadata
 
 
@@ -343,6 +357,17 @@ def _confined_file(path, package_root):
     return resolved, relative
 
 
+def legal_text(content):
+    """Return LF-normalised UTF-8 text, or None for binary content."""
+    if b"\x00" in content:
+        return None
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        text = content.decode("latin-1")
+    return text.replace("\r\n", "\n").encode("utf-8")
+
+
 def _license_file_candidates(package, package_root, excluded_roots=()):
     candidates = {}
     configured = package.get("license_file")
@@ -356,7 +381,7 @@ def _license_file_candidates(package, package_root, excluded_roots=()):
         candidates[relative] = resolved
 
     excluded = {Path(path).resolve() for path in excluded_roots}
-    ignored_directories = {".agents", ".git", ".scratch", "target"}
+    ignored_directories = {".agents", ".claude", ".git", ".scratch", "target"}
     def walk_error(_error):
         raise PackagingError("dependency crate contents could not be scanned for legal text")
 
@@ -398,7 +423,9 @@ def _fallback_file(package_name, package_version, entry, asset_root):
         if source.is_symlink() or not source.is_file():
             raise PackagingError("verified licence fallback text is missing")
         content = source.read_bytes()
-        if hashlib.sha256(content).hexdigest() != expected:
+        # A checkout with core.autocrlf=true rewrites committed LF texts as CRLF.
+        lf_content = content.replace(b"\r\n", b"\n")
+        if expected not in (hashlib.sha256(content).hexdigest(), hashlib.sha256(lf_content).hexdigest()):
             raise PackagingError("verified licence fallback SHA-256 does not match")
         source_url = _public_https_url(item.get("source_url"), "fallback source URL")
         upstream_path = safe_relative_path(item.get("upstream_path"), "upstream licence path").as_posix()
@@ -475,15 +502,20 @@ def _public_https_url(value, label):
 def collect_package_license_files(package, fallback_entries, asset_root, excluded_roots=()):
     name, version = _package_key(package)
     package_root = _package_root(package)
-    candidates = _license_file_candidates(package, package_root, excluded_roots)
+    candidates = []
+    for relative, path in _license_file_candidates(package, package_root, excluded_roots):
+        content = path.read_bytes()
+        # Names such as libwinapi_oemlicense.a match the markers but are not texts.
+        if legal_text(content) is not None:
+            candidates.append((relative, content))
     if candidates:
         results = []
-        for relative, path in candidates:
+        for relative, content in candidates:
             archive_path = "dependency-notices/{}-{}/{}".format(name, version, relative)
             results.append(
                 {
                     "archive_path": safe_relative_path(archive_path).as_posix(),
-                    "bytes": path.read_bytes(),
+                    "bytes": content,
                     "origin": "crate",
                     "source_url": None,
                     "upstream_path": relative,
@@ -583,34 +615,20 @@ def _json_bytes(value):
     return (json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":")) + "\n").encode("utf-8")
 
 
-def _write_bytes(root, relative, content, mode=0o644):
-    rel = safe_relative_path(relative)
-    destination = Path(root).joinpath(*rel.parts)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists() or destination.is_symlink():
-        raise PackagingError("release staging path already exists")
-    with destination.open("xb") as output:
-        output.write(content)
-    try:
-        destination.chmod(mode)
-    except OSError:
-        pass
-    return destination
-
-
-def _copy_repo_file(repo, staging, relative):
+def _read_repo_file(repo, relative):
     rel = safe_relative_path(relative, "repository legal document path")
     source = Path(repo).joinpath(*rel.parts)
     if source.is_symlink() or not source.is_file():
         raise PackagingError("required repository legal document is unavailable")
-    return _write_bytes(staging, rel.as_posix(), source.read_bytes())
+    return source.read_bytes()
 
 
-def _copy_public_documents(repo, staging):
-    for relative in ("LICENSE", "NOTICE", "README.md", "THIRD_PARTY_NOTICES.md"):
-        _copy_repo_file(repo, staging, relative)
+def repository_legal_documents(repo):
+    """The repository's own notices and the licence texts they reference, by path."""
+    repo = Path(repo)
+    documents = {relative: _read_repo_file(repo, relative) for relative in LEADING_DOCUMENTS}
 
-    license_root = Path(repo) / "licenses"
+    license_root = repo / "licenses"
     required_public_licenses = (
         "licenses/vga-0.2.9-LICENSE-MIT.txt",
         "licenses/vga-0.2.9-LICENSE-APACHE.txt",
@@ -624,45 +642,43 @@ def _copy_public_documents(repo, staging):
             continue
         if not source.is_file():
             raise PackagingError("public licence tree contains a non-regular file")
-        relative = source.relative_to(Path(repo)).as_posix()
-        _copy_repo_file(repo, staging, relative)
-    if any(not (Path(repo) / relative).is_file() for relative in required_public_licenses):
+        relative = source.relative_to(repo).as_posix()
+        documents[relative] = _read_repo_file(repo, relative)
+    if any(relative not in documents for relative in required_public_licenses):
         raise PackagingError("required public font licence texts are unavailable")
 
-    crates_root = Path(repo) / "crates"
+    crates_root = repo / "crates"
     notices = sorted(crates_root.glob("*/NOTICE.md")) if crates_root.is_dir() else []
     if not notices:
         raise PackagingError("workspace crate notices are unavailable")
     for source in notices:
         if source.is_symlink() or not source.is_file():
             raise PackagingError("crate notice is not a regular file")
-        _copy_repo_file(repo, staging, source.relative_to(Path(repo)).as_posix())
+        relative = source.relative_to(repo).as_posix()
+        documents[relative] = _read_repo_file(repo, relative)
     host_dirs_license = "crates/gp64-types/HOST_DIRS_LICENSE.txt"
-    if not (Path(repo) / host_dirs_license).is_file():
-        raise PackagingError("gp64-types host-directory MIT text is unavailable")
-    _copy_repo_file(repo, staging, host_dirs_license)
+    documents[host_dirs_license] = _read_repo_file(repo, host_dirs_license)
+    return documents
 
 
-def _write_dependency_documents(staging, documents, manifest, prefix=""):
-    for item in documents:
-        relative = item["archive_path"]
-        if prefix:
-            relative = prefix.rstrip("/") + "/" + relative
-        _write_bytes(staging, relative, item["bytes"])
-
-    manifest_relative = "dependency-notices/MANIFEST.json"
-    if prefix:
-        manifest_relative = prefix.rstrip("/") + "/" + manifest_relative
-        manifest = _manifest_with_prefix(manifest, prefix.rstrip("/") + "/")
-    _write_bytes(staging, manifest_relative, _json_bytes(manifest))
-
-
-def _manifest_with_prefix(manifest, prefix):
-    copied = json.loads(json.dumps(manifest))
-    for package in copied.get("packages", []):
-        for item in package.get("files", []):
-            item["path"] = prefix + item["path"]
-    return copied
+def third_party_licenses(repo_documents, dependency_documents, dependency_manifest):
+    """One plain-text file holding every notice and licence text, each under its path."""
+    documents = dict(repo_documents)
+    for item in dependency_documents:
+        documents[item["archive_path"]] = item["bytes"]
+    documents["dependency-notices/MANIFEST.json"] = _json_bytes(dependency_manifest)
+    missing = [name for name in LEADING_DOCUMENTS if name not in documents]
+    if missing:
+        raise PackagingError("combined licence file is missing a leading notice")
+    order = list(LEADING_DOCUMENTS) + sorted(name for name in documents if name not in LEADING_DOCUMENTS)
+    rule = "=" * 78
+    sections = []
+    for name in order:
+        text = legal_text(documents[name])
+        if text is None:
+            raise PackagingError("legal document is not text: " + name)
+        sections.append("{0}\n{1}\n{0}\n\n{2}\n\n".format(rule, name, text.decode("utf-8").rstrip()))
+    return "".join(sections).encode("utf-8")
 
 
 def zip_timestamp(timestamp):
@@ -671,185 +687,45 @@ def zip_timestamp(timestamp):
     return (year, value.month, value.day, value.hour, value.minute, value.second - value.second % 2)
 
 
-def write_deterministic_zip(source_dir, destination, archive_root, source_time):
-    root = Path(source_dir)
+def write_release_zip(members, destination, archive_root, source_time):
+    """members: (name, bytes, mode) in archive order."""
     prefix = safe_relative_path(archive_root, "archive root").as_posix()
     timestamp = zip_timestamp(source_time)
-    target = Path(destination)
-    with zipfile.ZipFile(target, mode="x", compression=zipfile.ZIP_STORED, strict_timestamps=False) as archive:
-        entries = sorted((path for path in root.rglob("*") if path.is_file()), key=lambda path: path.relative_to(root).as_posix())
-        for path in entries:
-            if path.is_symlink():
-                raise PackagingError("binary package staging contains a symlink")
-            relative = safe_relative_path(path.relative_to(root).as_posix()).as_posix()
+    with zipfile.ZipFile(Path(destination), mode="x", compression=zipfile.ZIP_DEFLATED, strict_timestamps=False) as archive:
+        for name, content, mode in members:
+            relative = safe_relative_path(name).as_posix()
             info = zipfile.ZipInfo(prefix + "/" + relative, date_time=timestamp)
             info.create_system = 3
-            info.compress_type = zipfile.ZIP_STORED
+            info.compress_type = zipfile.ZIP_DEFLATED
             info.flag_bits |= 0x800
-            info.external_attr = (stat.S_IFREG | stat.S_IMODE(path.stat().st_mode)) << 16
+            info.external_attr = (stat.S_IFREG | mode) << 16
             info.extra = b""
             info.comment = b""
-            archive.writestr(info, path.read_bytes())
+            archive.writestr(info, content, compresslevel=9)
 
 
-def _tree_manifest(directory):
-    root = Path(directory)
-    files = []
-    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
-        if path.is_dir() and not path.is_symlink():
-            continue
-        relative = safe_relative_path(path.relative_to(root).as_posix(), "vendor file path").as_posix()
-        if path.is_symlink():
-            target = os.readlink(path)
-            _validate_symlink_target(relative, target)
-            content = target.encode("utf-8")
-            kind = "symlink"
-        elif path.is_file():
-            content = path.read_bytes()
-            kind = "file"
-        else:
-            raise PackagingError("vendor tree contains an unsupported file type")
-        files.append({"path": relative, "kind": kind, "sha256": hashlib.sha256(content).hexdigest()})
-    payload = _json_bytes({"schema_version": 1, "files": files})
-    return files, payload, hashlib.sha256(payload).hexdigest()
-
-
-def _validate_symlink_target(member_path, target):
-    if not target or "\\" in target or "\x00" in target or ":" in target:
-        raise PackagingError("source archive has an unsafe symlink")
-    target_path = PurePosixPath(target)
-    if target_path.is_absolute():
-        raise PackagingError("source archive has an absolute symlink")
-    depth = len(PurePosixPath(member_path).parent.parts)
-    for part in target_path.parts:
-        if part in ("", "."):
-            continue
-        if part == "..":
-            depth -= 1
-            if depth < 0:
-                raise PackagingError("source archive symlink escapes the source tree")
-        else:
-            depth += 1
-
-
-def extract_git_archive(archive_file, destination):
-    root = Path(destination)
-    root.mkdir(parents=True, exist_ok=False)
-    try:
-        with tarfile.open(fileobj=archive_file, mode="r|") as archive:
-            for member in archive:
-                name = member.name.rstrip("/")
-                if not name:
-                    continue
-                relative = safe_relative_path(name, "git archive member")
-                output = root.joinpath(*relative.parts)
-                parent = output.parent
-                parent.mkdir(parents=True, exist_ok=True)
-                cursor = root
-                for part in relative.parts[:-1]:
-                    cursor = cursor / part
-                    if cursor.is_symlink() or (cursor.exists() and not cursor.is_dir()):
-                        raise PackagingError("git archive member traverses a non-directory")
-                if member.isdir():
-                    output.mkdir(parents=True, exist_ok=True)
-                    continue
-                if member.isfile():
-                    source = archive.extractfile(member)
-                    if source is None:
-                        raise PackagingError("git archive file could not be read")
-                    with output.open("xb") as target:
-                        shutil.copyfileobj(source, target)
-                    output.chmod(member.mode & 0o777)
-                    continue
-                if member.issym():
-                    _validate_symlink_target(relative.as_posix(), member.linkname)
-                    if output.exists() or output.is_symlink():
-                        raise PackagingError("git archive contains duplicate paths")
-                    os.symlink(member.linkname, output)
-                    continue
-                raise PackagingError("git archive contains an unsupported member type")
-    except (tarfile.TarError, OSError) as exc:
-        if isinstance(exc, PackagingError):
-            raise
-        raise PackagingError("git archive could not be safely extracted") from exc
-
-
-def write_deterministic_tar_gz(source_dir, destination, source_time, archive_root=None):
-    root = Path(source_dir)
-    target = Path(destination)
-    prefix = safe_relative_path(archive_root, "archive root").as_posix() if archive_root else ""
-    with target.open("xb") as raw:
+def write_release_tar_gz(members, destination, archive_root, source_time):
+    """members: (name, bytes, mode) in archive order."""
+    prefix = safe_relative_path(archive_root, "archive root").as_posix()
+    with Path(destination).open("xb") as raw:
         with gzip.GzipFile(filename="", mode="wb", compresslevel=9, fileobj=raw, mtime=0) as compressed:
             with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as archive:
-                entries = sorted(root.rglob("*"), key=lambda path: path.relative_to(root).as_posix())
-                for path in entries:
-                    relative = safe_relative_path(path.relative_to(root).as_posix(), "source archive path").as_posix()
-                    name = prefix + "/" + relative if prefix else relative
-                    info = tarfile.TarInfo(name)
+                for name, content, mode in members:
+                    info = tarfile.TarInfo(prefix + "/" + safe_relative_path(name).as_posix())
                     info.uid = 0
                     info.gid = 0
                     info.uname = ""
                     info.gname = ""
                     info.mtime = source_time
                     info.pax_headers = {}
-                    if path.is_symlink():
-                        link_target = os.readlink(path)
-                        _validate_symlink_target(relative, link_target)
-                        info.type = tarfile.SYMTYPE
-                        info.linkname = link_target
-                        info.mode = 0o777
-                        info.size = 0
-                        archive.addfile(info)
-                    elif path.is_dir():
-                        info.type = tarfile.DIRTYPE
-                        info.mode = 0o755
-                        info.size = 0
-                        archive.addfile(info)
-                    elif path.is_file():
-                        info.type = tarfile.REGTYPE
-                        info.mode = 0o755 if stat.S_IMODE(path.stat().st_mode) & 0o111 else 0o644
-                        info.size = path.stat().st_size
-                        with path.open("rb") as source:
-                            archive.addfile(info, source)
-                    else:
-                        raise PackagingError("source tree contains an unsupported file type")
+                    info.type = tarfile.REGTYPE
+                    info.mode = mode
+                    info.size = len(content)
+                    archive.addfile(info, io.BytesIO(content))
 
 
-def sha256_file(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def write_checksum_file(archive_path, sidecar_path):
-    name = Path(archive_path).name
-    content = "{}  {}\n".format(sha256_file(archive_path), name).encode("ascii")
-    with Path(sidecar_path).open("xb") as sidecar:
-        sidecar.write(content)
-
-
-def buildinfo_document(checkout, host, rustc, archive_path):
-    return {
-        "schema_version": 1,
-        "tag": checkout.tag,
-        "version": checkout.version,
-        "revision": checkout.revision,
-        "target": host.target,
-        "rustc": rustc,
-        "checksum": sha256_file(archive_path),
-        "unsigned": True,
-    }
-
-
-def _stage_release_documents(root, staging, binary_path, host, version, source_time, documents, dependency_manifest):
-    _copy_public_documents(root, staging)
-    for item in documents:
-        _write_bytes(staging, item["archive_path"], item["bytes"])
-    _write_bytes(staging, "dependency-notices/MANIFEST.json", _json_bytes(dependency_manifest))
-    binary_mode = 0o755 if host.platform_name == "macos-arm64" else 0o644
-    _write_bytes(staging, host.binary_name, Path(binary_path).read_bytes(), binary_mode)
+def release_archive_name(tag, host):
+    return "gp64-{}-{}{}".format(tag, host.archive_suffix, host.archive_extension)
 
 
 def _install_staged_outputs(staging, output_dir, names):
@@ -874,574 +750,156 @@ def _install_staged_outputs(staging, output_dir, names):
         raise PackagingError("release outputs could not be installed without overwriting") from exc
 
 
-def _rustc_version():
-    version = _text_command(["rustc", "--version"], None, "rustc version lookup").splitlines()
-    if not version or not version[0].startswith("rustc "):
-        raise PackagingError("rustc returned an invalid version string")
-    return version[0]
-
-
 def package_binary(repo_root, binary, tag, revision, output_dir):
     host = detect_host()
     checkout = validate_checkout(repo_root, tag, revision)
     output = validate_output_directory(output_dir, checkout.root)
-    extension = ".zip" if host.platform_name == "windows-x86_64" else ".tar.gz"
-    filename = "gp64-{}-{}{}".format(checkout.tag, host.archive_suffix, extension)
-    sha_name = filename + ".sha256"
-    info_name = filename + ".buildinfo.json"
-    names = [filename, sha_name, info_name]
-    ensure_outputs_available(output, names)
+    filename = release_archive_name(checkout.tag, host)
+    ensure_outputs_available(output, [filename])
 
-    verify_binary_architecture(binary, host.platform_name)
-    metadata = load_full_metadata(checkout.root)
+    binary_bytes = verify_binary_architecture(binary, host.platform_name)
+    metadata = load_target_metadata(checkout.root, host.target)
     fallback_root = Path(__file__).resolve().parents[1] / "assets" / "dependency-licenses"
     documents, dependency_manifest = collect_dependency_documents(metadata, fallback_root)
-    rustc = _rustc_version()
+    licences = third_party_licenses(
+        repository_legal_documents(checkout.root), documents, dependency_manifest
+    )
+    members = [
+        (host.binary_name, binary_bytes, 0o755),
+        (LICENSE_NAME, legal_text(_read_repo_file(checkout.root, LICENSE_NAME)), 0o644),
+        (THIRD_PARTY_NAME, licences, 0o644),
+    ]
 
     parent = output.parent
     parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="gp64-release-stage-", dir=str(parent)) as temp:
         stage = Path(temp)
-        package_tree = stage / "package"
-        package_tree.mkdir()
-        _stage_release_documents(
-            checkout.root,
-            package_tree,
-            binary,
-            host,
-            checkout.version,
-            checkout.commit_time,
-            documents,
-            dependency_manifest,
-        )
-        archive_path = stage / filename
         archive_root = "gp64-{}-{}".format(checkout.tag, host.archive_suffix)
-        if host.platform_name == "windows-x86_64":
-            write_deterministic_zip(package_tree, archive_path, archive_root, checkout.commit_time)
+        if host.archive_extension == ".zip":
+            write_release_zip(members, stage / filename, archive_root, checkout.commit_time)
         else:
-            write_deterministic_tar_gz(package_tree, archive_path, checkout.commit_time, archive_root)
-        write_checksum_file(archive_path, stage / sha_name)
-        buildinfo = buildinfo_document(checkout, host, rustc, archive_path)
-        (stage / info_name).write_bytes(_json_bytes(buildinfo))
-        _install_staged_outputs(stage, output, names)
-    return [filename, sha_name, info_name]
+            write_release_tar_gz(members, stage / filename, archive_root, checkout.commit_time)
+        _install_staged_outputs(stage, output, [filename])
+    return [filename]
 
 
-def _check_source_vendor_inputs(source_root):
-    cargo_directory = source_root / ".cargo"
-    config = source_root / ".cargo" / "config.toml"
-    if cargo_directory.is_symlink() or (cargo_directory.exists() and not cargo_directory.is_dir()):
-        raise PackagingError("source revision has an unsafe .cargo path")
-    if config.exists() or config.is_symlink():
-        raise PackagingError("source revision already contains .cargo/config.toml; offline vendor config needs review")
-    if (source_root / "vendor").exists() or (source_root / "vendor").is_symlink():
-        raise PackagingError("source revision already contains vendor; refusing to replace it")
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def _write_cargo_vendor_config(source_root):
-    config = source_root / ".cargo" / "config.toml"
-    if config.parent.is_symlink() or (config.parent.exists() and not config.parent.is_dir()):
-        raise PackagingError("source archive has an unsafe .cargo path")
-    if config.exists() or config.is_symlink():
-        raise PackagingError("source revision already contains .cargo/config.toml; offline vendor config needs review")
-    _write_bytes(
-        source_root,
-        ".cargo/config.toml",
-        b'[source.crates-io]\nreplace-with = "vendored-sources"\n\n'
-        b'[source.vendored-sources]\ndirectory = "vendor"\n\n'
-        b'[net]\noffline = true\n',
-    )
+def _archive_member_name(raw_name, archive_root):
+    relative = safe_relative_path(raw_name, "release archive member").as_posix()
+    prefix = archive_root + "/"
+    if not relative.startswith(prefix):
+        raise PackagingError("release archive has an unexpected root directory")
+    return safe_relative_path(relative[len(prefix) :], "release archive member").as_posix()
 
 
-def _copy_source_legal_docs(source_root, documents, dependency_manifest):
-    prefix = "licenses"
-    for item in documents:
-        destination = prefix + "/" + item["archive_path"]
-        _write_bytes(source_root, destination, item["bytes"])
-    manifest = _manifest_with_prefix(dependency_manifest, prefix + "/")
-    _write_bytes(source_root, "licenses/dependency-notices/MANIFEST.json", _json_bytes(manifest))
-
-
-def _git_archive_to_tree(checkout, destination):
-    with tempfile.TemporaryFile() as archive_data:
-        try:
-            subprocess.run(
-                ["git", "archive", "--format=tar", checkout.revision],
-                cwd=str(checkout.root),
-                stdout=archive_data,
-                stderr=subprocess.PIPE,
-                check=True,
-            )
-        except FileNotFoundError as exc:
-            raise PackagingError("required tool is unavailable: git") from exc
-        except subprocess.CalledProcessError as exc:
-            raise PackagingError("git archive failed (exit {})".format(exc.returncode)) from exc
-        archive_data.seek(0)
-        extract_git_archive(archive_data, destination)
-
-
-def package_source(repo_root, tag, revision, output_dir):
-    detect_host()
-    checkout = validate_checkout(repo_root, tag, revision)
-    output = validate_output_directory(output_dir, checkout.root)
-    filename = "gp64-{}-source.tar.gz".format(checkout.tag)
-    sha_name = filename + ".sha256"
-    names = [filename, sha_name]
-    ensure_outputs_available(output, names)
-
-    metadata = load_full_metadata(checkout.root)
-    fallback_root = Path(__file__).resolve().parents[1] / "assets" / "dependency-licenses"
-    documents, dependency_manifest = collect_dependency_documents(metadata, fallback_root)
-
-    parent = output.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="gp64-source-stage-", dir=str(parent)) as temp:
-        stage = Path(temp)
-        source_tree = stage / "source"
-        _git_archive_to_tree(checkout, source_tree)
-        _check_source_vendor_inputs(source_tree)
-        _run(
-            ["cargo", "vendor", "--locked", "--offline", "--versioned-dirs", "vendor"],
-            source_tree,
-            "cargo vendor",
-        )
-        vendor_root = source_tree / "vendor"
-        if vendor_root.is_symlink() or not vendor_root.is_dir():
-            raise PackagingError("cargo vendor did not create the expected vendor tree")
-        files, vendor_manifest, vendor_hash = _tree_manifest(vendor_root)
-        _write_cargo_vendor_config(source_tree)
-        _copy_source_legal_docs(source_tree, documents, dependency_manifest)
-
-        lockfile = source_tree / "Cargo.lock"
-        if not lockfile.is_file():
-            raise PackagingError("source archive is missing Cargo.lock")
-        source_manifest = {
-            "schema_version": 1,
-            "tag": checkout.tag,
-            "version": checkout.version,
-            "source_commit": checkout.revision,
-            "cargo_lock_sha256": sha256_file(lockfile),
-            "vendor_file_count": len(files),
-            "vendor_manifest_sha256": vendor_hash,
-        }
-        _write_bytes(source_tree, "VENDOR_MANIFEST.json", vendor_manifest)
-        _write_bytes(source_tree, "SOURCE_MANIFEST.json", _json_bytes(source_manifest))
-
-        archive_path = stage / filename
-        write_deterministic_tar_gz(source_tree, archive_path, checkout.commit_time)
-        write_checksum_file(archive_path, stage / sha_name)
-        _install_staged_outputs(stage, output, names)
-    return names
-
-
-def _expected_tag_revision(tag, revision):
-    match = TAG_RE.fullmatch(tag) if isinstance(tag, str) else None
-    if not match:
-        raise PackagingError("release tag must use v<workspace-version> form")
-    if not isinstance(revision, str) or not REVISION_RE.fullmatch(revision):
-        raise PackagingError("revision must be a full 40- or 64-character commit ID")
-    return match.group("version"), revision.lower()
-
-
-def _require_regular_file(path, description):
-    candidate = Path(path)
-    if candidate.is_symlink() or not candidate.is_file():
-        raise PackagingError("{} must be a regular file".format(description))
-    return candidate
-
-
-def _verify_checksum_sidecar(archive_path):
-    archive = _require_regular_file(archive_path, "release archive")
-    sidecar = _require_regular_file(str(archive) + ".sha256", "checksum sidecar")
-    try:
-        text = sidecar.read_text(encoding="ascii")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise PackagingError("checksum sidecar is not readable ASCII") from exc
-    expected = "{}  {}\n".format(sha256_file(archive), archive.name)
-    if text != expected:
-        raise PackagingError("release archive checksum sidecar does not match")
-    return archive
-
-
-def _dependency_manifest_paths(raw, prefix, file_digests):
-    try:
-        manifest = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise PackagingError("dependency notice manifest is invalid JSON") from exc
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
-        raise PackagingError("dependency notice manifest has an unsupported schema")
-    packages = manifest.get("packages")
-    if not isinstance(packages, list):
-        raise PackagingError("dependency notice manifest is missing its package list")
-    listed = set()
-    package_keys = set()
-    for package in packages:
-        if not isinstance(package, dict):
-            raise PackagingError("dependency notice manifest has an invalid package entry")
-        key = _package_key(package)
-        if key in package_keys:
-            raise PackagingError("dependency notice manifest contains a duplicate package")
-        package_keys.add(key)
-        source = package.get("source")
-        package_files = package.get("files")
-        if source not in ("workspace", "registry", "git", "external") or not isinstance(package_files, list):
-            raise PackagingError("dependency notice manifest has invalid package provenance")
-        if source != "workspace" and not package_files:
-            raise PackagingError("dependency notice manifest omits legal text for an external package")
-        for item in package_files:
-            if not isinstance(item, dict):
-                raise PackagingError("dependency notice manifest has an invalid file entry")
-            relative = safe_relative_path(item.get("path"), "dependency notice path").as_posix()
-            prefix_path = prefix.rstrip("/")
-            expected_prefix = (prefix_path + "/" if prefix_path else "") + "dependency-notices/"
-            if not relative.startswith(expected_prefix):
-                raise PackagingError("dependency notice path is outside its legal-document directory")
-            digest = item.get("sha256")
-            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-                raise PackagingError("dependency notice manifest contains an invalid SHA-256")
-            if relative in listed:
-                raise PackagingError("dependency notice manifest lists a file more than once")
-            if file_digests.get(relative) != digest:
-                raise PackagingError("dependency notice text is missing or its SHA-256 does not match")
-            listed.add(relative)
-    prefix_path = (prefix.rstrip("/") + "/" if prefix.rstrip("/") else "") + "dependency-notices/"
-    actual = {
-        path for path in file_digests
-        if path.startswith(prefix_path) and path != prefix_path + "MANIFEST.json"
-    }
-    if actual != listed:
-        raise PackagingError("dependency notice files do not match their manifest")
-    return manifest
-
-
-def _verify_required_legal_paths(files_by_path):
-    required = (
-        "LICENSE",
-        "NOTICE",
-        "README.md",
-        "THIRD_PARTY_NOTICES.md",
-        "licenses/vga-0.2.9-LICENSE-MIT.txt",
-        "licenses/vga-0.2.9-LICENSE-APACHE.txt",
-        "crates/gp64-types/HOST_DIRS_LICENSE.txt",
-    )
-    missing = [path for path in required if path not in files_by_path]
-    if missing:
-        raise PackagingError("release archive is missing required legal or project documents")
-    if not any(re.fullmatch(r"crates/[^/]+/NOTICE\.md", path) for path in files_by_path):
-        raise PackagingError("release archive is missing per-crate notices")
-
-
-def _zip_file_payloads(archive_path, archive_root):
-    files = {}
-    file_digests = {}
-    seen_casefolded = set()
+def _zip_members(archive_path, archive_root):
+    members = {}
     try:
         with zipfile.ZipFile(archive_path, mode="r") as archive:
-            bad_member = archive.testzip()
-            if bad_member is not None:
-                raise PackagingError("binary release ZIP has a corrupt member")
+            if archive.testzip() is not None:
+                raise PackagingError("release ZIP has a corrupt member")
             for info in archive.infolist():
-                raw_name = info.filename.rstrip("/") if info.is_dir() else info.filename
-                relative = safe_relative_path(raw_name, "binary archive member").as_posix()
                 if info.is_dir():
-                    raise PackagingError("binary release ZIP contains unexpected directory members")
-                prefix = archive_root + "/"
-                if not relative.startswith(prefix):
-                    raise PackagingError("binary release ZIP has an unexpected archive root")
-                member_path = relative[len(prefix) :]
-                member_path = safe_relative_path(member_path, "binary archive member").as_posix()
-                if member_path.casefold() in seen_casefolded:
-                    raise PackagingError("binary release ZIP contains duplicate paths")
-                seen_casefolded.add(member_path.casefold())
-                mode = info.external_attr >> 16
-                file_type = stat.S_IFMT(mode)
-                if file_type not in (0, stat.S_IFREG):
-                    raise PackagingError("binary release ZIP contains a non-regular file")
-                files[member_path] = archive.read(info)
+                    raise PackagingError("release ZIP contains unexpected directory members")
+                name = _archive_member_name(info.filename, archive_root)
+                if stat.S_IFMT(info.external_attr >> 16) not in (0, stat.S_IFREG):
+                    raise PackagingError("release ZIP contains a non-regular file")
+                if name in members:
+                    raise PackagingError("release archive contains duplicate paths")
+                members[name] = (archive.read(info), stat.S_IMODE(info.external_attr >> 16))
     except PackagingError:
         raise
     except (OSError, RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
-        raise PackagingError("binary release ZIP could not be read safely") from exc
-    for path, content in files.items():
-        file_digests[path] = hashlib.sha256(content).hexdigest()
-    return files, file_digests
+        raise PackagingError("release ZIP could not be read safely") from exc
+    return members
 
 
-def verify_binary_archive(archive_path, tag, revision, platform_name):
-    version, expected_revision = _expected_tag_revision(tag, revision)
+def _tar_members(archive_path, archive_root):
+    members = {}
+    try:
+        with tarfile.open(archive_path, mode="r:gz") as archive:
+            for member in archive:
+                if not member.isfile():
+                    raise PackagingError("release tarball contains a non-regular member")
+                name = _archive_member_name(member.name, archive_root)
+                if name in members:
+                    raise PackagingError("release archive contains duplicate paths")
+                source = archive.extractfile(member)
+                if source is None:
+                    raise PackagingError("release tarball member could not be read")
+                members[name] = (source.read(), stat.S_IMODE(member.mode))
+    except PackagingError:
+        raise
+    except (OSError, EOFError, zlib.error, tarfile.TarError) as exc:
+        raise PackagingError("release tarball could not be read safely") from exc
+    return members
+
+
+def verify_binary_archive(archive_path, tag, platform_name):
+    if not isinstance(tag, str) or not TAG_RE.fullmatch(tag):
+        raise PackagingError("release tag must use v<workspace-version> form")
     host = SUPPORTED_HOSTS.get(platform_name)
     if host is None:
         raise PackagingError("unsupported binary platform")
     archive = Path(archive_path)
-    extension = ".zip" if platform_name == "windows-x86_64" else ".tar.gz"
-    expected_name = "gp64-{}-{}{}".format(tag, host.archive_suffix, extension)
-    if archive.name != expected_name:
-        raise PackagingError("binary archive basename does not match the requested release")
-    archive = _verify_checksum_sidecar(archive)
-    info_path = archive.with_name(archive.name + ".buildinfo.json")
-    _require_regular_file(info_path, "buildinfo sidecar")
-    try:
-        buildinfo = json.loads(info_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise PackagingError("binary buildinfo sidecar is invalid JSON") from exc
-    if (
-        not isinstance(buildinfo, dict)
-        or buildinfo.get("schema_version") != 1
-        or buildinfo.get("tag") != tag
-        or buildinfo.get("version") != version
-        or str(buildinfo.get("revision", "")).lower() != expected_revision
-        or buildinfo.get("target") != host.target
-        or buildinfo.get("unsigned") is not True
-        or not isinstance(buildinfo.get("rustc"), str)
-        or not buildinfo.get("rustc", "").startswith("rustc ")
-        or buildinfo.get("checksum") != sha256_file(archive)
-    ):
-        raise PackagingError("binary buildinfo does not match the requested release")
+    if archive.is_symlink() or not archive.is_file():
+        raise PackagingError("release archive must be a regular file")
+    if archive.name != release_archive_name(tag, host):
+        raise PackagingError("release archive basename does not match the requested release")
 
     archive_root = "gp64-{}-{}".format(tag, host.archive_suffix)
-    if platform_name == "windows-x86_64":
-        files, file_digests = _zip_file_payloads(archive, archive_root)
-        file_paths = set(files)
-        binary_bytes = files.get(host.binary_name)
-        dependency_manifest = files.get("dependency-notices/MANIFEST.json", b"")
-        _verify_required_legal_paths(file_paths)
-        _dependency_manifest_paths(dependency_manifest, "", file_digests)
+    if host.archive_extension == ".zip":
+        members = _zip_members(archive, archive_root)
     else:
-        try:
-            with tarfile.open(archive, mode="r:gz") as binary_archive:
-                members, kinds = _tar_member_paths(binary_archive, archive_root)
-                file_paths = {path for path, kind in kinds.items() if kind == "file"}
-                _verify_required_legal_paths(file_paths)
-                file_digests = {
-                    path: _tar_file_sha256(binary_archive, members[path])
-                    for path in file_paths
-                    if path.startswith("dependency-notices/")
-                }
-                dependency_manifest = _tar_read_file(
-                    binary_archive, members, "dependency-notices/MANIFEST.json"
-                ) or b""
-                _dependency_manifest_paths(dependency_manifest, "", file_digests)
-                binary_member = members.get(host.binary_name)
-                if binary_member is not None and binary_member.isfile() and not (binary_member.mode & 0o111):
-                    raise PackagingError("macOS archive executable is not executable")
-                binary_bytes = _tar_read_file(
-                    binary_archive, members, host.binary_name, limit=512 * 1024 * 1024
-                )
-        except PackagingError:
-            raise
-        except (OSError, tarfile.TarError) as exc:
-            raise PackagingError("binary macOS tarball could not be read safely") from exc
-    if binary_bytes is None:
-        raise PackagingError("binary release archive is missing its executable")
+        members = _tar_members(archive, archive_root)
+    expected = {host.binary_name, LICENSE_NAME, THIRD_PARTY_NAME}
+    if set(members) != expected:
+        raise PackagingError(
+            "release archive must contain exactly {}".format(", ".join(sorted(expected)))
+        )
+
+    binary_bytes, binary_mode = members[host.binary_name]
     verify_binary_bytes(binary_bytes, platform_name)
-    return {
-        "archive": archive.name,
-        "revision": expected_revision,
-        "target": host.target,
-        "checksum": sha256_file(archive),
-    }
-
-
-def _tar_member_paths(archive, archive_root=None):
-    members = {}
-    kinds = {}
-    seen_casefolded = set()
+    if host.platform_name == "macos-arm64" and not binary_mode & 0o111:
+        raise PackagingError("macOS archive executable is not executable")
+    if GPL_MARKER not in members[LICENSE_NAME][0][:512]:
+        raise PackagingError("release archive LICENSE is not the GPL text")
+    licences = members[THIRD_PARTY_NAME][0]
     try:
-        for member in archive:
-            raw_name = member.name.rstrip("/") if member.isdir() else member.name
-            relative = safe_relative_path(raw_name, "source archive member").as_posix()
-            if archive_root is not None:
-                prefix = safe_relative_path(archive_root, "archive root").as_posix() + "/"
-                if not relative.startswith(prefix):
-                    raise PackagingError("archive has an unexpected root directory")
-                relative = safe_relative_path(relative[len(prefix) :], "source archive member").as_posix()
-            if relative in members:
-                raise PackagingError("source archive contains duplicate paths")
-            if relative.casefold() in seen_casefolded:
-                raise PackagingError("source archive contains paths that collide on case-insensitive filesystems")
-            seen_casefolded.add(relative.casefold())
-            if member.isfile():
-                kind = "file"
-            elif member.isdir():
-                kind = "directory"
-            elif member.issym():
-                kind = "symlink"
-                _validate_symlink_target(relative, member.linkname)
-            else:
-                raise PackagingError("source archive contains an unsupported member type")
-            members[relative] = member
-            kinds[relative] = kind
-    except PackagingError:
-        raise
-    except (OSError, tarfile.TarError) as exc:
-        raise PackagingError("source archive could not be read safely") from exc
-
-    for relative in members:
-        path = PurePosixPath(relative)
-        for index in range(1, len(path.parts)):
-            parent = PurePosixPath(*path.parts[:index]).as_posix()
-            if parent in members and kinds[parent] != "directory":
-                raise PackagingError("source archive member traverses a non-directory")
-    return members, kinds
-
-
-def _tar_read_file(archive, members, path, limit=32 * 1024 * 1024):
-    member = members.get(path)
-    if member is None or not member.isfile():
-        return None
-    source = archive.extractfile(member)
-    if source is None:
-        raise PackagingError("source archive file could not be read")
-    data = source.read(limit + 1)
-    if len(data) > limit:
-        raise PackagingError("source archive metadata member exceeds the verification limit")
-    return data
-
-
-def _tar_file_sha256(archive, member):
-    source = archive.extractfile(member)
-    if source is None:
-        raise PackagingError("source archive file could not be read")
-    digest = hashlib.sha256()
-    for chunk in iter(lambda: source.read(1024 * 1024), b""):
-        digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _verify_source_dependency_manifest(archive, members, file_digests):
-    manifest_path = "licenses/dependency-notices/MANIFEST.json"
-    raw = _tar_read_file(archive, members, manifest_path)
-    if raw is None:
-        raise PackagingError("source archive is missing its dependency notice manifest")
-    _dependency_manifest_paths(raw, "licenses", file_digests)
-
-
-def verify_source_archive(archive_path, tag, revision):
-    version, expected_revision = _expected_tag_revision(tag, revision)
-    archive = Path(archive_path)
-    expected_name = "gp64-{}-source.tar.gz".format(tag)
-    if archive.name != expected_name:
-        raise PackagingError("source archive basename does not match the requested release")
-    archive = _verify_checksum_sidecar(archive)
-    try:
-        with tarfile.open(archive, mode="r:gz") as source_archive:
-            members, kinds = _tar_member_paths(source_archive)
-            file_paths = {path for path, kind in kinds.items() if kind == "file"}
-            file_digests = {}
-            symlinks = {}
-            for path, member in members.items():
-                if kinds[path] == "symlink":
-                    symlinks[path] = member.linkname
-
-            required = (
-                "Cargo.toml",
-                "Cargo.lock",
-                ".cargo/config.toml",
-                "SOURCE_MANIFEST.json",
-                "VENDOR_MANIFEST.json",
-                "LICENSE",
-                "NOTICE",
-                "README.md",
-                "THIRD_PARTY_NOTICES.md",
-            )
-            if any(path not in file_paths for path in required):
-                raise PackagingError("source archive is missing a required source or legal document")
-            if "crates/gp64/Cargo.toml" not in file_paths or "crates/gp64/src/main.rs" not in file_paths:
-                raise PackagingError("source archive is missing required application source")
-            _verify_required_legal_paths(file_paths)
-            for path in file_paths:
-                if path.startswith("vendor/") or path.startswith("licenses/dependency-notices/"):
-                    file_digests[path] = _tar_file_sha256(source_archive, members[path])
-            config = _tar_read_file(source_archive, members, ".cargo/config.toml")
-            if b'replace-with = "vendored-sources"' not in config or b"offline = true" not in config:
-                raise PackagingError("source archive does not configure offline vendored Cargo dependencies")
-
-            try:
-                source_manifest_bytes = _tar_read_file(source_archive, members, "SOURCE_MANIFEST.json")
-                cargo_lock = _tar_read_file(source_archive, members, "Cargo.lock")
-                vendor_manifest_bytes = _tar_read_file(source_archive, members, "VENDOR_MANIFEST.json")
-                source_manifest = json.loads(source_manifest_bytes.decode("utf-8"))
-                vendor_manifest = json.loads(vendor_manifest_bytes.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise PackagingError("source archive manifests are invalid JSON") from exc
-            if (
-                not isinstance(source_manifest, dict)
-                or source_manifest.get("schema_version") != 1
-                or source_manifest.get("tag") != tag
-                or source_manifest.get("version") != version
-                or str(source_manifest.get("source_commit", "")).lower() != expected_revision
-                or source_manifest.get("cargo_lock_sha256") != hashlib.sha256(cargo_lock).hexdigest()
-                or source_manifest.get("vendor_manifest_sha256") != hashlib.sha256(vendor_manifest_bytes).hexdigest()
-                or not isinstance(vendor_manifest, dict)
-                or vendor_manifest.get("schema_version") != 1
-                or not isinstance(vendor_manifest.get("files"), list)
-            ):
-                raise PackagingError("source manifest does not match the requested tag or revision")
-
-            expected_vendor = {}
-            for item in vendor_manifest["files"]:
-                if not isinstance(item, dict):
-                    raise PackagingError("vendor manifest contains an invalid file entry")
-                relative = safe_relative_path(item.get("path"), "vendor manifest path").as_posix()
-                if relative in expected_vendor:
-                    raise PackagingError("vendor manifest contains duplicate paths")
-                kind = item.get("kind")
-                digest = item.get("sha256")
-                if kind not in ("file", "symlink") or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-                    raise PackagingError("vendor manifest contains invalid file metadata")
-                expected_vendor[relative] = (kind, digest)
-            actual_vendor = {
-                path[len("vendor/") :]: kinds[path]
-                for path in members
-                if path.startswith("vendor/") and kinds[path] in ("file", "symlink")
-            }
-            if actual_vendor != {path: kind for path, (kind, _) in expected_vendor.items()}:
-                raise PackagingError("vendored source files do not match their manifest")
-            if source_manifest.get("vendor_file_count") != len(expected_vendor):
-                raise PackagingError("source manifest vendor file count does not match")
-            for relative, (kind, expected_digest) in expected_vendor.items():
-                path = "vendor/" + relative
-                if kind == "file":
-                    actual_digest = file_digests.get(path)
-                else:
-                    target = symlinks.get(path)
-                    actual_digest = hashlib.sha256(target.encode("utf-8")).hexdigest() if target is not None else None
-                if actual_digest != expected_digest:
-                    raise PackagingError("vendored source content does not match its manifest")
-
-            _verify_source_dependency_manifest(source_archive, members, file_digests)
-    except PackagingError:
-        raise
-    except (OSError, tarfile.TarError) as exc:
-        raise PackagingError("source archive could not be read safely") from exc
-    return {"archive": archive.name, "revision": expected_revision, "checksum": sha256_file(archive)}
+        licences.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PackagingError("third-party licence file is not UTF-8 text") from exc
+    for name in LEADING_DOCUMENTS + ("dependency-notices/MANIFEST.json",):
+        if "\n{}\n".format(name).encode("utf-8") not in licences:
+            raise PackagingError("third-party licence file is missing " + name)
+    return {"archive": archive.name, "target": host.target, "sha256": sha256_file(archive)}
 
 
 def _arguments(argv=None):
-    parser = argparse.ArgumentParser(description="Package or verify gp64 release assets locally.")
+    parser = argparse.ArgumentParser(description="Package or verify a gp64 release archive locally.")
     subparsers = parser.add_subparsers(dest="mode", required=True)
-    for mode in ("binary", "source"):
-        child = subparsers.add_parser(mode)
-        child.add_argument("--repo", required=True, help="clean gp64 checkout at the pinned tag")
-        child.add_argument("--tag", required=True, help="release tag, for example v0.1.0")
-        child.add_argument("--revision", required=True, help="full commit ID that the tag and checkout resolve to")
-        child.add_argument("--output-dir", required=True, help="new or existing directory outside the checkout")
-        if mode == "binary":
-            child.add_argument("--binary", required=True, help="prebuilt native gp64 executable")
+    binary = subparsers.add_parser("binary")
+    binary.add_argument("--repo", required=True, help="clean gp64 checkout at the pinned tag")
+    binary.add_argument("--tag", required=True, help="release tag, for example v0.1.0")
+    binary.add_argument("--revision", required=True, help="full commit ID that the tag and checkout resolve to")
+    binary.add_argument("--output-dir", required=True, help="new or existing directory outside the checkout")
+    binary.add_argument("--binary", required=True, help="prebuilt native gp64 executable")
     binary_verify = subparsers.add_parser("verify-binary")
-    binary_verify.add_argument("--archive", required=True, help="binary release archive to verify")
+    binary_verify.add_argument("--archive", required=True, help="release archive to verify")
     binary_verify.add_argument("--tag", required=True, help="release tag, for example v0.1.0")
-    binary_verify.add_argument("--revision", required=True, help="expected full source commit ID")
     binary_verify.add_argument(
         "--platform",
         required=True,
         choices=sorted(SUPPORTED_HOSTS),
-        help="platform metadata expected in the asset",
+        help="platform the archive is built for",
     )
-    source_verify = subparsers.add_parser("verify-source")
-    source_verify.add_argument("--archive", required=True, help="source tarball to verify")
-    source_verify.add_argument("--tag", required=True, help="release tag, for example v0.1.0")
-    source_verify.add_argument("--revision", required=True, help="expected full source commit ID")
     return parser.parse_args(argv)
 
 
@@ -1450,14 +908,8 @@ def main(argv=None):
     try:
         if args.mode == "binary":
             files = package_binary(args.repo, args.binary, args.tag, args.revision, args.output_dir)
-        elif args.mode == "source":
-            files = package_source(args.repo, args.tag, args.revision, args.output_dir)
-        elif args.mode == "verify-binary":
-            result = verify_binary_archive(args.archive, args.tag, args.revision, args.platform)
-            print(json.dumps(dict(result, status="verified"), sort_keys=True))
-            return 0
         else:
-            result = verify_source_archive(args.archive, args.tag, args.revision)
+            result = verify_binary_archive(args.archive, args.tag, args.platform)
             print(json.dumps(dict(result, status="verified"), sort_keys=True))
             return 0
     except PackagingError as exc:
