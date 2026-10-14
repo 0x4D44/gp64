@@ -223,6 +223,10 @@ impl Mouse {
 
     /// Called only at interpreter exits, before executing another instruction.
     /// Mouse callback delivery wakes HLT just as the driver's hardware IRQ does.
+    /// A callback is running and its RETF must end the interpreter run.
+    pub(crate) fn awaiting_return(&self) -> bool {
+        self.callback.is_some()
+    }
     pub(crate) fn boundary(&mut self, cpu: &mut Cpu, memory: &mut Memory) -> Result<(), CpuError> {
         if cpu.regs.cs == 0xf000 && cpu.regs.ip() == 0xff40 {
             if let Some(saved) = self.callback.take() {

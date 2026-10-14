@@ -511,6 +511,11 @@ impl DosMachine {
                         failure = Some(error.into());
                         return InterruptAction::Yield;
                     }
+                    // Only the mouse callback's return is watched for here;
+                    // every other host return lands on an INT or HLT stub.
+                    // Ending every run at each RETF and IRET instead makes
+                    // far-call-heavy guest code many times slower.
+                    machine.cpu.far_return_watch = mouse.awaiting_return();
                     return InterruptAction::Handled;
                 };
                 let exec = if (vector == 0x21
@@ -1167,6 +1172,36 @@ mod wait_tests {
         assert_eq!(pc.machine.cpu.regs.sp(), 0x8000);
         assert_eq!(pc.machine.cpu.regs.ax(), 0x005a);
         assert_eq!(pc.machine.io.pic.diagnostic_snapshot().master.isr, 0);
+    }
+    #[test]
+    fn far_returns_end_runs_only_while_a_mouse_callback_is_out() {
+        let mut pc = guest(false, false, true, 0);
+        pc.machine.set_cycles_per_second(100_000_000);
+        // A loop of far calls to a bare RETF, then the same loop as a mouse
+        // callback that never returns.
+        let far_call_loop = [0x9a, 0x00, 0x00, 0x00, 0x23, 0xeb, 0xf9];
+        install(&mut pc.machine.memory, 0x1000, 0, &far_call_loop);
+        install(&mut pc.machine.memory, 0x2300, 0, &[0xcb]);
+        install(&mut pc.machine.memory, 0x2400, 0, &far_call_loop);
+        let runs = |pc: &mut DosMachine| {
+            let before = pc.machine.slices().total;
+            advance(pc, pc.machine.cycle() + 1_000_000, 1_000_000);
+            pc.machine.slices().total - before
+        };
+        let plain = runs(&mut pc);
+        assert!(plain < 5_000, "{plain} runs");
+        assert!(!pc.machine.cpu.far_return_watch);
+        let cpu = &mut pc.machine.cpu;
+        cpu.regs.set_ax(0x0c);
+        cpu.regs.set_cx(1);
+        cpu.regs.es = 0x2400;
+        cpu.regs.set_dx(0);
+        pc.mouse.interrupt(cpu, &mut pc.machine.memory);
+        pc.mouse.move_relative(8, 0);
+        let watched = runs(&mut pc);
+        assert!(pc.mouse.awaiting_return());
+        assert!(pc.machine.cpu.far_return_watch);
+        assert!(watched > plain * 10, "{watched} runs against {plain}");
     }
     #[test]
     fn bios_wait_nested_callback_retains_both_frames() {
