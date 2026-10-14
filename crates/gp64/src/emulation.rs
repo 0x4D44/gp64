@@ -9,7 +9,7 @@ use crate::{
     script::{self, Poll, Runner, Script},
 };
 use gp64::recording::{self, Finished, Recording, Status};
-use gp64_machine::{launcher, modem::ModemLine, DosMachine, DosRunExit};
+use gp64_machine::{launcher, modem::ModemLine, DosMachine, DosRunExit, Slices};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -112,7 +112,11 @@ impl Emulation {
                         dos.machine.cycle(),
                     );
                     let mut busy = Duration::ZERO;
-                    let mut speed = SpeedLog::new(Duration::ZERO, dos.machine.cycle());
+                    let mut speed = SpeedLog::new(
+                        Duration::ZERO,
+                        dos.machine.cycle(),
+                        dos.machine.slices(),
+                    );
                     let mut mixer = audio.as_ref().map(|(rate, _)| Mixer::new(*rate));
                     let mut mixed = Vec::new();
                     let mut completed = dos.machine.completed_frames();
@@ -179,7 +183,13 @@ impl Emulation {
                             started: producer.started(),
                         });
                         let spent = std::mem::take(&mut busy);
-                        speed.sample(now, spent, cycle, pacing.rate(), pacing.paused());
+                        speed.sample(
+                            now,
+                            spent,
+                            (cycle, dos.machine.slices()),
+                            pacing.rate(),
+                            pacing.paused(),
+                        );
                         let budget = pacing.budget(now, spent, cycle, fill);
                         if pacing.rate() != dos.machine.cycles_per_second() {
                             recording.retime(cycle, pacing.rate());
@@ -329,18 +339,27 @@ impl script::Guest for ScriptGuest<'_> {
 struct SpeedLog {
     since: Duration,
     cycle: u64,
+    slices: Slices,
     busy: Duration,
 }
 impl SpeedLog {
     const PERIOD: Duration = Duration::from_secs(5);
-    fn new(now: Duration, cycle: u64) -> Self {
+    fn new(now: Duration, cycle: u64, slices: Slices) -> Self {
         Self {
             since: now,
             cycle,
+            slices,
             busy: Duration::ZERO,
         }
     }
-    fn sample(&mut self, now: Duration, busy: Duration, cycle: u64, rate: u64, paused: bool) {
+    fn sample(
+        &mut self,
+        now: Duration,
+        busy: Duration,
+        (cycle, slices): (u64, Slices),
+        rate: u64,
+        paused: bool,
+    ) {
         self.busy += busy;
         let elapsed = now.saturating_sub(self.since);
         if elapsed < Self::PERIOD {
@@ -350,13 +369,15 @@ impl SpeedLog {
             let seconds = elapsed.as_secs_f64();
             tracing::info!(
                 target: "gp64::speed",
-                "guest {:.1} MHz of {:.1} MHz, host busy {:.0}%",
+                "guest {:.1} MHz of {:.1} MHz, host busy {:.0}%, {:.0}k runs/s ({:.0}k ended by I/O)",
                 cycle.saturating_sub(self.cycle) as f64 / seconds / 1e6,
                 rate as f64 / 1e6,
                 self.busy.as_secs_f64() / seconds * 100.0,
+                slices.total.saturating_sub(self.slices.total) as f64 / seconds / 1e3,
+                slices.io.saturating_sub(self.slices.io) as f64 / seconds / 1e3,
             );
         }
-        *self = Self::new(now, cycle);
+        *self = Self::new(now, cycle, slices);
     }
 }
 fn check_launch_recording(recording: &Recording) -> Result<(), String> {

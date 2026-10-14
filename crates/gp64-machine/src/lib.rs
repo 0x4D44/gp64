@@ -62,6 +62,13 @@ pub struct CompletedFrame {
     pub height: usize,
     pub cycle: u64,
 }
+/// Interpreter runs: each ends at the next device event, the budget, or a
+/// port access. Many short runs mean the per-run overhead dominates.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Slices {
+    pub total: u64,
+    pub io: u64,
+}
 /// Owned CPU, RAM (including VGA planes), and the fixed PC hardware.
 pub struct Machine {
     pub cpu: Cpu,
@@ -69,6 +76,7 @@ pub struct Machine {
     pub io: IoBus,
     clock: Timeline,
     io_fraction: u64,
+    slices: Slices,
     modem: Option<modem::TcpModem>,
     null_modem: Option<nullmodem::NullModem>,
     exception_defaults: Option<(u32, [Option<u32>; 32])>,
@@ -95,6 +103,7 @@ impl Machine {
             io,
             clock,
             io_fraction: 0,
+            slices: Slices::default(),
             modem: None,
             null_modem: None,
             exception_defaults: None,
@@ -167,6 +176,10 @@ impl Machine {
         assert!(rate != 0);
         self.advance();
         self.clock.retime(&mut self.io, rate);
+    }
+    /// Interpreter runs so far, and how many of them a port access ended.
+    pub fn slices(&self) -> Slices {
+        self.slices
     }
     pub fn completed_frames(&self) -> u64 {
         self.clock.frames
@@ -308,6 +321,8 @@ impl Machine {
                 budget,
             );
             self.cpu.cycles += u64::from(result.charged_cycles) + bus.delay;
+            self.slices.total += 1;
+            self.slices.io += u64::from(bus.accessed);
             gp64_interp::sync_on_exit(&mut self.cpu);
             self.advance();
             match result.result {
