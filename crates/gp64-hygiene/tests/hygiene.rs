@@ -31,6 +31,7 @@ const WORD_ALLOWLIST: &[&str] = &[
     concat!("crates/gp64-machine/src/launcher.rs:pub const DEFAULT_BATCH: &str = \"F1", "GP.BAT\";"),
     "crates/gp64-machine/src/launcher.rs:pub const DEFAULT_PROGRAM: &str = \"GP.EXE\";",
     concat!("crates/gp64-machine/src/launcher.rs:pub const MISSING_DEFAULT: &str = \"no F1", "GP.BAT or GP.EXE beside gp64\";"),
+    concat!("README.md:Run Geoff Cram", "mond's original Formula", " One Grand", " Prix (F1", "GP) on Windows 11 and macOS."),
     concat!("README.md:Copy gp64 into your own F1", "GP folder and run it. It starts the normal batch launcher, or the executable if the batch file is absent."),
     concat!("README.md:No game files are included. You must own the game. gp64 is not affiliated with or endorsed by the rights holders of F1", "GP (Formula", " One Grand", " Prix)."),
 ];

@@ -1,8 +1,12 @@
 # gp64
 
-gp64 is a cut-down DOS emulator that runs a player's own copy of a supported
-DOS game from its folder. It emulates a real-mode PC, DOS and BIOS services in
-Rust, with VGA video, keyboard and mouse, PC speaker and AdLib audio, and a
+Run Geoff Crammond's original Formula One Grand Prix (F1GP) on Windows 11 and macOS.
+Copy gp64 into your existing game folder and run it. The game starts as it
+did on a DOS PC, with its own graphics, sound, controls and modem play.
+
+gp64 runs your own unmodified copy by emulation, not decompilation. Under the
+hood it is a cut-down DOS emulator in Rust: a real-mode PC, DOS and BIOS
+services, VGA video, keyboard and mouse, PC speaker and AdLib audio, and a
 serial modem over direct TCP. No DOS installation or ROM image is required.
 
 This is a personal project with irregular maintenance. Contributions and pull
