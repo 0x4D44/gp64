@@ -93,6 +93,7 @@ mod tests {
                 } else {
                     0
                 },
+                modem: 0.0,
             })
             .collect()
     }

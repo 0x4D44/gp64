@@ -209,6 +209,21 @@ struct Queues {
     rx: VecDeque<u8>,
     dtr_drop: bool,
     signals: (bool, bool, bool, bool),
+    /// Speaker audio at [`SPEAKER_RATE`], only while the speaker sounds.
+    speaker: VecDeque<f32>,
+}
+/// The DSP's speaker sample rate.
+const SPEAKER_RATE: u32 = 8_000;
+/// Speaker samples held for playback before the oldest are dropped: a
+/// stalled guest must not replay a stale handshake later.
+const SPEAKER_BACKLOG: usize = SPEAKER_RATE as usize / 5;
+/// Linear interpolation from the 8 kHz speaker to the chip sample rate.
+#[derive(Default)]
+struct SpeakerPlayback {
+    previous: f32,
+    next: f32,
+    /// Progress from `previous` to `next`, in chip-rate units.
+    phase: u32,
 }
 /// Owns a DSP thread. Dropping the attachment closes the phone line and joins it.
 pub struct TcpModem {
@@ -221,6 +236,7 @@ pub struct TcpModem {
     dtr: bool,
     cts: bool,
     line: ModemLine,
+    speaker: SpeakerPlayback,
 }
 impl TcpModem {
     /// Bind before returning; resolve and connect asynchronously with a deadline.
@@ -286,11 +302,31 @@ impl TcpModem {
             dtr: false,
             cts: true,
             line,
+            speaker: SpeakerPlayback::default(),
         })
     }
     /// A handle that starts and ends this modem's phone line.
     pub fn line(&self) -> ModemLine {
         self.line.clone()
+    }
+    /// Fills each chip-rate sample's `modem` with the speaker, interpolated
+    /// up from 8 kHz. When the speaker is quiet or behind, it is silent.
+    pub(crate) fn mix_speaker(&mut self, audio: &mut [crate::AudioSample]) {
+        if audio.is_empty() {
+            return;
+        }
+        let mut q = self.queues.lock().unwrap_or_else(|e| e.into_inner());
+        let playback = &mut self.speaker;
+        for sample in audio {
+            playback.phase += SPEAKER_RATE;
+            while playback.phase >= gp64_opl2::SAMPLE_RATE {
+                playback.phase -= gp64_opl2::SAMPLE_RATE;
+                playback.previous = playback.next;
+                playback.next = q.speaker.pop_front().unwrap_or(0.0);
+            }
+            let t = playback.phase as f32 / gp64_opl2::SAMPLE_RATE as f32;
+            sample.modem = playback.previous + (playback.next - playback.previous) * t;
+        }
     }
     pub(crate) fn start_at(&mut self, cycle: u64) {
         self.last_cycle = cycle;
@@ -781,9 +817,24 @@ impl Engine {
                 };
                 q.rx.push_back(byte);
             }
+            // Always drain the DSP; keep what the speaker would play.
+            let mut speaker = [0f32; 80];
+            let count = dsp.speaker_samples_raw(&mut speaker);
+            if speaker_audible(dsp.speaker_mode(), dsp.is_online()) {
+                q.speaker.extend(&speaker[..count]);
+                let excess = q.speaker.len().saturating_sub(SPEAKER_BACKLOG);
+                q.speaker.drain(..excess);
+            }
         }
-        let mut speaker = [0f32; 80];
-        dsp.speaker_samples_raw(&mut speaker);
+    }
+}
+/// Whether the speaker sounds, by the Hayes `M` register: M0 never, M2
+/// always, M1 and M3 until the call is online, as mdpc plays it.
+fn speaker_audible(mode: u8, online: bool) -> bool {
+    match mode {
+        0 => false,
+        2 => true,
+        _ => !online,
     }
 }
 fn run(shutdown: Arc<AtomicBool>, mut engine: Box<Engine>) {
@@ -1345,5 +1396,84 @@ mod tests {
             assert_eq!(engine.wire.take_chunk(), Some(second));
             assert_eq!(engine.wire.buffered_bytes(), 0);
         }
+    }
+
+    #[test]
+    fn the_speaker_follows_the_m_register_like_mdpc() {
+        for (mode, offline, online) in [
+            (0, false, false),
+            (1, true, false),
+            (2, true, true),
+            (3, true, false),
+        ] {
+            assert_eq!(
+                speaker_audible(mode, false),
+                offline,
+                "M{mode} before carrier"
+            );
+            assert_eq!(speaker_audible(mode, true), online, "M{mode} online");
+        }
+    }
+
+    fn silent_audio(count: usize) -> Vec<crate::AudioSample> {
+        (0..count as u64)
+            .map(|cycle| crate::AudioSample {
+                cycle,
+                speaker: 0.0,
+                opl2: 0,
+                modem: 0.0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn speaker_audio_is_interpolated_to_the_chip_rate_and_silent_when_dry() {
+        let mut serial = SerialPorts::new();
+        let mut modem = TcpModem::attach_line(2, &mut serial, ModemClock::EmulatedTime).unwrap();
+        let mut audio = silent_audio(1000);
+        modem.mix_speaker(&mut audio);
+        assert!(
+            audio.iter().all(|sample| sample.modem == 0.0),
+            "no speaker audio yet"
+        );
+
+        let input = [0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0, 1.0];
+        modem.queues.lock().unwrap().speaker.extend(input);
+        // Eight 8 kHz samples cover about 50 chip-rate samples; play past them.
+        let mut audio = silent_audio(200);
+        modem.mix_speaker(&mut audio);
+        let played: Vec<f32> = audio.iter().map(|sample| sample.modem).collect();
+        assert!(played.iter().all(|&value| (0.0..=1.0).contains(&value)));
+        assert!(
+            played.windows(2).take(30).all(|pair| pair[1] >= pair[0]),
+            "the ramp rises smoothly: {played:?}"
+        );
+        assert!(played.contains(&1.0), "the peak is reached");
+        assert!(played[150..].iter().all(|&value| value == 0.0), "dry again");
+        assert!(modem.queues.lock().unwrap().speaker.is_empty());
+    }
+
+    #[test]
+    fn dialling_sounds_on_the_speaker_unless_it_is_muted() {
+        let dial = |command: &[u8]| {
+            let queues = Arc::new(Mutex::new(Queues::default()));
+            let mut engine = Engine::new(Arc::clone(&queues), None, None, ModemClock::RealTime);
+            queues.lock().unwrap().tx.extend(command);
+            for _ in 0..50 {
+                engine.tick();
+            }
+            let speaker = std::mem::take(&mut queues.lock().unwrap().speaker);
+            speaker
+        };
+        let heard = dial(b"ATDT5551234\r");
+        assert!(
+            heard.iter().any(|sample| sample.abs() > 0.01),
+            "dial tones reach the speaker"
+        );
+        assert!(heard.len() <= SPEAKER_BACKLOG);
+        assert!(
+            dial(b"ATM0DT5551234\r").is_empty(),
+            "M0 keeps the speaker off"
+        );
     }
 }

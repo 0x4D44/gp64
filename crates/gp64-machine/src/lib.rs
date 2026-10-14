@@ -182,7 +182,11 @@ impl Machine {
             .unwrap_or_default()
     }
     pub fn take_audio(&mut self) -> Vec<AudioSample> {
-        std::mem::take(&mut self.clock.audio)
+        let mut audio = std::mem::take(&mut self.clock.audio);
+        if let Some(modem) = &mut self.modem {
+            modem.mix_speaker(&mut audio);
+        }
+        audio
     }
     /// Snapshot the current VGA image. Mode dimensions and palette come from the device state.
     pub fn frame(&mut self) -> Frame {

@@ -15,7 +15,7 @@ use std::{
 
 /// The chip-rate mix sent to both the speaker resampler and the recorder.
 pub fn mixed_sample(sample: &AudioSample) -> f32 {
-    ((sample.speaker + f32::from(sample.opl2) / 32768.0) * 0.5).clamp(-1.0, 1.0)
+    ((sample.speaker + f32::from(sample.opl2) / 32768.0 + sample.modem) * 0.5).clamp(-1.0, 1.0)
 }
 
 /// An absolute cycle boundary and the recording time accumulated before it.
@@ -552,6 +552,19 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[test]
+    fn the_modem_speaker_mixes_at_the_pc_speakers_weight() {
+        let sample = |speaker, modem| AudioSample {
+            cycle: 0,
+            speaker,
+            opl2: 0,
+            modem,
+        };
+        assert_eq!(mixed_sample(&sample(0.0, 0.5)), 0.25);
+        assert_eq!(mixed_sample(&sample(0.5, 0.5)), 0.5);
+        assert_eq!(mixed_sample(&sample(1.0, 1.0)), 1.0, "clamped");
+    }
+
     mod decode {
         include!("../tests/support/decode.rs");
     }
@@ -602,6 +615,7 @@ mod tests {
                 cycle: 20_001 + i * 20_000_000 / u64::from(SAMPLE_RATE),
                 speaker: 0.5,
                 opl2: 0,
+                modem: 0.0,
             })
             .collect();
         machine.cpu.cycles = audio.last().unwrap().cycle;

@@ -24,6 +24,9 @@ pub struct AudioSample {
     pub cycle: u64,
     pub speaker: f32,
     pub opl2: i16,
+    /// The modem's speaker, in -1..=1; filled when the machine hands
+    /// samples out.
+    pub modem: f32,
 }
 
 pub(crate) struct Timeline {
@@ -270,6 +273,7 @@ impl Timeline {
                             cycle: deadline.cycle,
                             speaker: speaker[0],
                             opl2,
+                            modem: 0.0,
                         });
                     }
                     self.audio_start = deadline.cycle;
