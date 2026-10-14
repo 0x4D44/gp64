@@ -53,7 +53,7 @@ fn executable_has_icon_and_version_resources() {
     let count = u16::from_le_bytes([group[4], group[5]]) as usize;
     let sizes: Vec<u8> = (0..count).map(|i| group[6 + i * 14]).collect();
     // A 256-pixel icon records its size as 0.
-    assert_eq!(sizes, [16, 32, 48, 64, 0]);
+    assert_eq!(sizes, [16, 24, 32, 48, 64, 0]);
     for i in 0..count {
         let id = u16::from_le_bytes([group[6 + i * 14 + 12], group[6 + i * 14 + 13]]);
         assert!(resource(module, RT_ICON, id.into()).is_some(), "icon {id}");

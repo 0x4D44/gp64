@@ -40,7 +40,34 @@ const WORD_ALLOWLIST: &[&str] = &[
 const COMMIT_WORD_ALLOWLIST: &[&str] = &[
     concat!("commit/617485e633b212865b3b18d15ce16bea98a25d0a:The drop-in launcher runs ", "F1", "GP", ".BAT if present, else GP.EXE; those two names live only in launcher.rs. An owned test, ignored without GP64_GAME_DIR, launches the default headless at 20M cycles/s. It checks that both batch programs start, that no exception reaches an uninstalled vector, that a steady non-blank graphics frame appears, and that a key press changes the frame. Generic properties only."),
 ];
+// The application icon master is generated artwork Arthur chose; the sized
+// icons are shrunk from it.
 const BINARY_ALLOWLIST: &[(&str, &str)] = &[
+    ("crates/gp64/assets/icon.png", "crates/gp64/assets/icon.png"),
+    (
+        "crates/gp64/assets/icon-16.png",
+        "crates/gp64/assets/icon.png",
+    ),
+    (
+        "crates/gp64/assets/icon-24.png",
+        "crates/gp64/assets/icon.png",
+    ),
+    (
+        "crates/gp64/assets/icon-32.png",
+        "crates/gp64/assets/icon.png",
+    ),
+    (
+        "crates/gp64/assets/icon-48.png",
+        "crates/gp64/assets/icon.png",
+    ),
+    (
+        "crates/gp64/assets/icon-64.png",
+        "crates/gp64/assets/icon.png",
+    ),
+    (
+        "crates/gp64/assets/icon-256.png",
+        "crates/gp64/assets/icon.png",
+    ),
     (
         "crates/gp64-machine/tests/serial/answer-auto.com",
         "crates/gp64-machine/tests/serial/sertest.asm",

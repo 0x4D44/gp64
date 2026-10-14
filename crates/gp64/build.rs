@@ -5,7 +5,9 @@
 
 use std::{env, fs, path::PathBuf};
 
-const ART: &str = "assets/icon.txt";
+/// The icon images, each shrunk from the 1024-pixel master `assets/icon.png`
+/// with a Lanczos filter. Windows reads PNG icon images directly.
+const ICON_SIZES: &[u32] = &[16, 24, 32, 48, 64, 256];
 /// The group icon ID the frontend loads with `Icon::from_resource`.
 const ICON_GROUP_ID: u16 = 1;
 const RT_ICON: u16 = 3;
@@ -15,124 +17,50 @@ const RT_VERSION: u16 = 16;
 const LANGUAGE: u16 = 0x0409;
 /// Unicode code page, paired with `LANGUAGE` in the version translation.
 const CODE_PAGE: u16 = 1200;
-/// Each icon size and the art it is scaled from by a whole multiple.
-const ICON_SIZES: &[(u32, u32)] = &[(16, 16), (32, 32), (48, 16), (64, 32), (256, 32)];
 
 fn main() {
-    println!("cargo:rerun-if-changed={ART}");
     println!("cargo:rerun-if-changed=build.rs");
+    for size in ICON_SIZES {
+        println!("cargo:rerun-if-changed={}", icon_path(*size));
+    }
     let windows = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows");
     let msvc = env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|target| target == "msvc");
     if !(windows && msvc) {
         return;
     }
-    let art = fs::read_to_string(ART).unwrap_or_else(|error| panic!("read {ART}: {error}"));
-    let images = parse_art(&art);
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR")).join("gp64.res");
-    fs::write(&output, resources(&images)).expect("write gp64.res");
+    fs::write(&output, resources()).expect("write gp64.res");
     println!("cargo:rustc-link-arg-bins={}", output.display());
 }
 
-/// A square RGBA image.
-struct Image {
-    size: u32,
-    pixels: Vec<[u8; 4]>,
+fn icon_path(size: u32) -> String {
+    format!("assets/icon-{size}.png")
 }
 
-fn parse_art(text: &str) -> Vec<Image> {
-    let mut palette = std::collections::HashMap::from([('.', [0, 0, 0, 0])]);
-    let mut images: Vec<Image> = Vec::new();
-    let mut rows_left = 0;
-    for line in text.lines().map(str::trim_end) {
-        if rows_left > 0 {
-            let image = images.last_mut().unwrap();
-            assert_eq!(line.chars().count() as u32, image.size, "{ART}: row width");
-            for ch in line.chars() {
-                let colour = palette.get(&ch);
-                image
-                    .pixels
-                    .push(*colour.unwrap_or_else(|| panic!("{ART}: no palette entry for {ch:?}")));
-            }
-            rows_left -= 1;
-        } else if let Some(size) = line.strip_prefix("size ") {
-            let size: u32 = size.parse().expect("icon size");
-            images.push(Image {
-                size,
-                pixels: Vec::new(),
-            });
-            rows_left = size;
-        } else if let Some((ch, hex)) = line.split_once(' ') {
-            if line.starts_with('#') {
-                continue;
-            }
-            let mut chars = ch.chars();
-            let (Some(ch), None) = (chars.next(), chars.next()) else {
-                panic!("{ART}: palette key must be one character: {line}");
-            };
-            let rgb = u32::from_str_radix(hex, 16).expect("palette colour");
-            let [_, r, g, b] = rgb.to_be_bytes();
-            palette.insert(ch, [r, g, b, 255]);
-        }
-    }
-    assert_eq!(rows_left, 0, "{ART}: image is missing rows");
-    images
-}
-
-/// Scales `art` by a whole multiple to `size` and encodes it as an icon
-/// image: a 32-bit bottom-up DIB followed by its 1-bit transparency mask.
-fn icon_image(art: &Image, size: u32) -> Vec<u8> {
-    assert_eq!(
-        size % art.size,
-        0,
-        "icon size {size} is not a multiple of {}",
-        art.size
+/// Reads one icon image and checks it is a square RGBA PNG of `size` pixels.
+fn icon_image(size: u32) -> Vec<u8> {
+    let path = icon_path(size);
+    let png = fs::read(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
+    let word = |at: usize| u32::from_be_bytes(png[at..at + 4].try_into().unwrap());
+    assert!(
+        png.len() > 26 && png.starts_with(b"\x89PNG\r\n\x1a\n") && &png[12..16] == b"IHDR",
+        "{path} is not a PNG"
     );
-    let scale = size / art.size;
-    let pixel = |x: u32, y: u32| art.pixels[((y / scale) * art.size + x / scale) as usize];
-    let mask_stride = size.div_ceil(32) * 4;
-    let mut data = Vec::new();
-    // BITMAPINFOHEADER; the height counts both the colour and mask planes.
-    data.extend(40u32.to_le_bytes());
-    data.extend(size.to_le_bytes());
-    data.extend((size * 2).to_le_bytes());
-    data.extend(1u16.to_le_bytes());
-    data.extend(32u16.to_le_bytes());
-    data.extend(0u32.to_le_bytes()); // BI_RGB
-    data.extend((size * size * 4 + mask_stride * size).to_le_bytes());
-    data.extend([0; 16]);
-    for y in (0..size).rev() {
-        for x in 0..size {
-            let [r, g, b, a] = pixel(x, y);
-            data.extend([b, g, r, a]);
-        }
-    }
-    for y in (0..size).rev() {
-        let mut row = vec![0u8; mask_stride as usize];
-        for x in 0..size {
-            if pixel(x, y)[3] == 0 {
-                row[(x / 8) as usize] |= 0x80 >> (x % 8);
-            }
-        }
-        data.extend(row);
-    }
-    data
+    assert_eq!((word(16), word(20)), (size, size), "{path} dimensions");
+    // Bit depth 8, colour type 6: 32-bit RGBA, as the group entry declares.
+    assert_eq!((png[24], png[25]), (8, 6), "{path} must be 8-bit RGBA");
+    png
 }
 
-fn resources(images: &[Image]) -> Vec<u8> {
-    let art = |size: u32| {
-        images
-            .iter()
-            .find(|image| image.size == size)
-            .unwrap_or_else(|| panic!("{ART}: no {size} x {size} image"))
-    };
+fn resources() -> Vec<u8> {
     // A .res file starts with an empty entry that marks its 32-bit format.
     let mut res = entry(0, 0, 0, &[]);
     let mut group = Vec::new();
     group.extend(0u16.to_le_bytes());
     group.extend(1u16.to_le_bytes());
     group.extend((ICON_SIZES.len() as u16).to_le_bytes());
-    for (id, &(size, from)) in (1u16..).zip(ICON_SIZES) {
-        let image = icon_image(art(from), size);
+    for (id, &size) in (1u16..).zip(ICON_SIZES) {
+        let image = icon_image(size);
         // GRPICONDIRENTRY: a 256-pixel dimension is stored as 0.
         group.extend([size as u8, size as u8, 0, 0]);
         group.extend(1u16.to_le_bytes());
