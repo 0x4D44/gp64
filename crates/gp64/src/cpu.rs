@@ -1,5 +1,6 @@
-//! This process's CPU usage for the window title, as a share of the whole
-//! machine, the way Task Manager and Activity Monitor's total report it.
+//! This process's CPU usage for the window title, as a share of one core,
+//! the way `top` reports it. The emulator is mostly one thread, so one core
+//! is its limit; other threads can take the total past 100%.
 use std::time::{Duration, Instant};
 
 /// How often the reading refreshes.
@@ -8,36 +9,31 @@ pub const INTERVAL: Duration = Duration::from_secs(1);
 /// Turns successive CPU-time readings into a usage percentage.
 pub struct Meter {
     last: Option<(Instant, Duration)>,
-    cores: u32,
 }
 impl Meter {
     pub fn new() -> Self {
-        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-        Self {
-            last: None,
-            cores: u32::try_from(cores).unwrap_or(u32::MAX),
-        }
+        Self { last: None }
     }
     /// Takes a reading. The first call only sets the baseline.
     pub fn sample(&mut self, now: Instant) -> Option<u32> {
         let cpu = process_time()?;
         let usage = self
             .last
-            .and_then(|(then, used)| usage(cpu.checked_sub(used)?, now - then, self.cores));
+            .and_then(|(then, used)| usage(cpu.checked_sub(used)?, now - then));
         self.last = Some((now, cpu));
         usage
     }
 }
 
-/// Rounds CPU time over wall time across `cores` to a whole percentage.
-fn usage(cpu: Duration, wall: Duration, cores: u32) -> Option<u32> {
+/// Rounds CPU time over wall time to a whole percentage of one core.
+fn usage(cpu: Duration, wall: Duration) -> Option<u32> {
     if wall.is_zero() {
         return None;
     }
-    let share = cpu.as_secs_f64() / wall.as_secs_f64() / f64::from(cores.max(1));
-    // The cast is safe: the value is clamped to 0..=100.
+    let share = cpu.as_secs_f64() / wall.as_secs_f64();
+    // The cast saturates; durations are never negative.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    Some((share * 100.0).round().clamp(0.0, 100.0) as u32)
+    Some((share * 100.0).round() as u32)
 }
 
 /// User plus kernel time used by every thread of this process.
@@ -90,13 +86,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn usage_is_a_share_of_every_core() {
+    fn usage_is_a_share_of_one_core() {
         let second = Duration::from_secs(1);
-        assert_eq!(usage(second, second, 4), Some(25));
-        assert_eq!(usage(second * 2, second, 4), Some(50));
-        assert_eq!(usage(Duration::ZERO, second, 4), Some(0));
-        assert_eq!(usage(second * 9, second, 4), Some(100));
-        assert_eq!(usage(second, Duration::ZERO, 4), None);
+        assert_eq!(usage(second / 4, second), Some(25));
+        assert_eq!(usage(second, second), Some(100));
+        assert_eq!(usage(Duration::ZERO, second), Some(0));
+        assert_eq!(usage(second * 3 / 2, second), Some(150));
+        assert_eq!(usage(second, Duration::ZERO), None);
     }
 
     #[test]
@@ -109,6 +105,9 @@ mod tests {
             spin = std::hint::black_box(spin.wrapping_add(1));
         }
         let busy = meter.sample(Instant::now()).unwrap();
-        assert!(busy > 0, "a spinning thread should register, got {busy}%");
+        assert!(
+            busy >= 20,
+            "a spinning thread should fill most of a core, got {busy}%"
+        );
     }
 }
