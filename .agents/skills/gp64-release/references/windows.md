@@ -18,8 +18,16 @@ $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvarsall.bat'
 Set a task-specific Cargo target directory in scratch. Release builds omit debug
 tables and strip symbols; keep the crate's optimization and panic settings.
 Set `RUSTFLAGS` to remap the source checkout and Cargo registry paths to neutral
-labels so local paths do not enter the distributable. Preserve existing flags or
+labels so local paths do not enter the distributable, and add
+`-C target-feature=+crt-static` so the executable does not need the Visual C++
+runtime (`VCRUNTIME140.dll`) on the player's machine. Preserve existing flags or
 report conflicting ones rather than silently changing the build.
+
+```powershell
+if ($env:RUSTFLAGS) { throw "RUSTFLAGS already set: $env:RUSTFLAGS" }
+$cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+$env:RUSTFLAGS = "--remap-path-prefix=$BuildWorktree=/gp64 --remap-path-prefix=$cargoHome=/cargo -C target-feature=+crt-static"
+```
 
 Run `vcvarsall.bat x64` and Cargo in the **same cmd.exe process**. Calling the
 batch file in a child process and Cargo later in its parent loses the toolchain
@@ -41,18 +49,21 @@ if ($LASTEXITCODE -ne 0) { throw 'Help smoke failed' }
 
 Verify the version output against the tag. Inspect the PE machine as x86-64 and
 `dumpbin /DEPENDENTS` using the same VC environment. Retain the import list in the
-build evidence. Account for every non-system DLL before distribution; do not
-bundle the Visual Studio installation or arbitrary host DLLs.
+build evidence. Expect only Windows system DLLs: no `VCRUNTIME140.dll` and no
+`api-ms-win-crt-*` entries, which would mean the static C runtime flag was lost.
+Account for every other non-system DLL before distribution; do not bundle the
+Visual Studio installation or arbitrary host DLLs.
 
 Package from the clean tag worktree:
 
 ```powershell
 python .agents/skills/gp64-release/scripts/package_release.py binary --repo $BuildWorktree --binary $binary --tag $Tag --revision $SourceSha --output-dir $AssetDirectory
 if ($LASTEXITCODE -ne 0) { throw 'Package failed' }
+$archive = Join-Path $AssetDirectory "gp64-$Tag-windows-x86_64.zip"
+python .agents/skills/gp64-release/scripts/package_release.py verify-binary --archive $archive --tag $Tag --platform windows-x86_64
+if ($LASTEXITCODE -ne 0) { throw 'Verify failed' }
 ```
 
-Use the helper's `source --help`, `verify-binary --help` and `verify-source --help`
-for the shared source bundle and downloaded assets. Do not create signing or
-installer claims: this is an unsigned portable
-ZIP containing `gp64.exe` and its notices. Running it from the player's program
-folder remains the normal launch behavior.
+Do not create signing or installer claims: this is an unsigned portable ZIP
+containing `gp64.exe`, `LICENSE` and `THIRD_PARTY_LICENSES.txt`. Running it from
+the player's program folder remains the normal launch behavior.

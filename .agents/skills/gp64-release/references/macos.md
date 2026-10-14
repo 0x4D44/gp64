@@ -34,11 +34,13 @@ Homebrew or other host dylib blocks a portable package until accounted for.
 python3 .agents/skills/gp64-release/scripts/package_release.py binary \
   --repo "$BUILD_WORKTREE" --binary "$binary" --tag "$TAG" \
   --revision "$SOURCE_SHA" --output-dir "$ASSET_DIRECTORY"
+python3 .agents/skills/gp64-release/scripts/package_release.py verify-binary \
+  --archive "$ASSET_DIRECTORY/gp64-$TAG-macos-arm64.tar.gz" --tag "$TAG" \
+  --platform macos-arm64
 ```
 
-Use the helper's `source --help`, `verify-binary --help` and `verify-source --help`
-for the shared source bundle and downloaded assets. The archive preserves the
-executable bit. No Developer ID signing,
+The tarball holds `gp64`, `LICENSE` and `THIRD_PARTY_LICENSES.txt` and preserves
+the executable bit. No Developer ID signing,
 notarization, `.app` bundle or universal/Intel binary is implied. The linker may
 apply the ad-hoc signature arm64 executables need; that does not make this a
 signed/notarized distribution. Do not disable system security or clear quarantine
