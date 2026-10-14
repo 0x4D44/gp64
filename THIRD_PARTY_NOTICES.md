@@ -48,8 +48,8 @@ are copied from each resolved package’s Cargo licence metadata.
 | libc | 0.2.190 | MIT OR Apache-2.0 |
 | ropus | 0.11.1 | BSD-3-Clause |
 | rustc_apfloat | 0.2.3+llvm-462a31f5a5ab | Apache-2.0 WITH LLVM-exception |
-| rvp9-decoder | 0.2.0-alpha.3 | BSD-3-Clause |
-| rvp9-encoder | 0.2.0-alpha.3 | BSD-3-Clause |
+| rvp9-decoder | 0.2.0-alpha.4 | BSD-3-Clause |
+| rvp9-encoder | 0.2.0-alpha.4 | BSD-3-Clause |
 | serde | 1.0.229 | MIT OR Apache-2.0 |
 | serde_json | 1.0.151 | MIT OR Apache-2.0 |
 | softbuffer | 0.4.8 | MIT OR Apache-2.0 |
@@ -101,7 +101,7 @@ terms](https://freetype.org/license), [Fontconfig's upstream licence
 file](https://gitlab.freedesktop.org/fontconfig/fontconfig/-/blob/main/COPYING),
 and [crossfont 0.8.1 package metadata](https://github.com/alacritty/crossfont/blob/v0.8.1/Cargo.toml).
 
-The codec family also includes the transitive `rvp9-core` 0.2.0-alpha.3,
+The codec family also includes the transitive `rvp9-core` 0.2.0-alpha.4,
 BSD-3-Clause. `ropus` and all resolved `rvp9-*` licences were checked in their
 registry Cargo.toml metadata. Codec dependencies retain their upstream notices.
 

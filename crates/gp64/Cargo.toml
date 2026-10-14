@@ -25,7 +25,7 @@ softbuffer = { version = "=0.4.8", default-features = false, features = [
 cpal = "=0.17.3"
 
 [dev-dependencies]
-rvp9-decoder = "0.2.0-alpha.2"
+rvp9-decoder = "0.2.0-alpha.4"
 ropus = "0.11"
 
 [lints]

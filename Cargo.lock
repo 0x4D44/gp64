@@ -1932,18 +1932,18 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rvp9-core"
-version = "0.2.0-alpha.3"
+version = "0.2.0-alpha.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7ce54b1ae229920ba9b0c67fbc155fa5d79353e687dc587ca5248c338022d3e"
+checksum = "bb7224393cfd20ff648539333e30a02e16729f9c043e205488c813ad0f1595b1"
 dependencies = [
  "crossbeam-channel",
 ]
 
 [[package]]
 name = "rvp9-decoder"
-version = "0.2.0-alpha.3"
+version = "0.2.0-alpha.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89fb851ccff0f0a6b4d3e8476d99dfd277724b61a16285ff0040d1310e9417f0"
+checksum = "cadde0bef30e7368aac1569c449143a7765c2008728217a1082ae3118b145905"
 dependencies = [
  "rvp9-core",
  "static_assertions",
@@ -1951,9 +1951,9 @@ dependencies = [
 
 [[package]]
 name = "rvp9-encoder"
-version = "0.2.0-alpha.3"
+version = "0.2.0-alpha.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfd8d6d14d9b2787cece2a7749920c8e29f40b704748ad839dd6c3dd2fe73f46"
+checksum = "ec010460b13b62060f7d96c1ceecd8dea51d3ede298faf20d82422dc0bf6208e"
 dependencies = [
  "rvp9-core",
 ]

@@ -7,14 +7,14 @@ license.workspace = true
 
 [dependencies]
 ropus = "0.11"
-rvp9-encoder = "0.2.0-alpha.2"
+rvp9-encoder = "0.2.0-alpha.4"
 tracing.workspace = true
 
 [dev-dependencies]
 # Decode oracle for the end-to-end capture test. Pure Rust, so it always runs —
 # unlike an ffmpeg-on-PATH check, which would silently pass where the tool is
 # absent.
-rvp9-decoder = "0.2.0-alpha.2"
+rvp9-decoder = "0.2.0-alpha.4"
 
 [lints]
 workspace = true
