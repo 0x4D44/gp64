@@ -45,9 +45,10 @@ $binary = Join-Path $TargetDirectory 'x86_64-pc-windows-msvc\release\gp64.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Version smoke failed' }
 & $binary --help
 if ($LASTEXITCODE -ne 0) { throw 'Help smoke failed' }
+(Get-Item $binary).VersionInfo.FileVersion
 ```
 
-Verify the version output against the tag. Inspect the PE machine as x86-64 and
+Verify the version output and the embedded file version against the tag. Inspect the PE machine as x86-64 and
 `dumpbin /DEPENDENTS` using the same VC environment. Retain the import list in the
 build evidence. Expect only Windows system DLLs: no `VCRUNTIME140.dll` and no
 `api-ms-win-crt-*` entries, which would mean the static C runtime flag was lost.

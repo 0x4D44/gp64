@@ -177,6 +177,25 @@ fn title_text(
     }
     title
 }
+/// Shows the executable's icon in the title bar and taskbar at the window's
+/// display scale. Builds without the resource (see build.rs) keep the default.
+#[cfg(windows)]
+fn set_icons(window: &Window) {
+    use winit::platform::windows::{IconExtWindows, WindowExtWindows};
+    use winit::{dpi::PhysicalSize, window::Icon};
+    /// The group icon ID build.rs embeds.
+    const ICON_GROUP_ID: u16 = 1;
+    let icon = |size: f64| {
+        let size = (size * window.scale_factor()).round() as u32;
+        Icon::from_resource(ICON_GROUP_ID, Some(PhysicalSize::new(size, size))).ok()
+    };
+    if let (Some(small), Some(large)) = (icon(16.0), icon(32.0)) {
+        window.set_window_icon(Some(small));
+        window.set_taskbar_icon(Some(large));
+    }
+}
+#[cfg(not(windows))]
+fn set_icons(_window: &Window) {}
 struct App {
     launch: Option<(Options, PathBuf, Option<String>)>,
     proxy: winit::event_loop::EventLoopProxy<Notice>,
@@ -508,6 +527,7 @@ impl ApplicationHandler<Notice> for App {
                         ),
                 )?,
             );
+            set_icons(&window);
             let context = softbuffer::Context::new(window.clone())
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
             self.surface = Some(
