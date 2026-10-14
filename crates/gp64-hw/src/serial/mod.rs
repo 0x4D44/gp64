@@ -1329,7 +1329,14 @@ pub struct SerialPorts {
     /// emulator should call `reschedule_uart_deadline_event()` and
     /// `refresh_serial_pic_irqs()` after the current quantum.
     pub event_reschedule_pending: bool,
+    /// The value each register last read back, so the read trace shows
+    /// changes rather than every poll of a status register.
+    last_read: [[Option<u8>; 8]; 4],
 }
+
+/// Log target for guest COM register access: writes at debug, changed
+/// reads at trace.
+const IO_TARGET: &str = "gp64::hw::serial::io";
 
 impl Default for SerialPorts {
     fn default() -> Self {
@@ -1354,6 +1361,18 @@ impl SerialPorts {
             ],
             present,
             event_reschedule_pending: false,
+            last_read: [[None; 8]; 4],
+        }
+    }
+
+    /// The COM index (0 = COM1) of a UART register address.
+    fn index_of(port: u16) -> Option<usize> {
+        match port {
+            0x3F8..=0x3FF => Some(0),
+            0x2F8..=0x2FF => Some(1),
+            0x3E8..=0x3EF => Some(2),
+            0x2E8..=0x2EF => Some(3),
+            _ => None,
         }
     }
 
@@ -1387,8 +1406,17 @@ impl SerialPorts {
             0x2E8..=0x2EF if self.present[3] => Some(self.ports[3].read(port)), // COM4
             _ => None,
         };
-        if result.is_some() {
+        if let Some(value) = result {
             self.event_reschedule_pending = true;
+            if tracing::enabled!(target: IO_TARGET, tracing::Level::TRACE) {
+                if let Some(index) = Self::index_of(port) {
+                    let last = &mut self.last_read[index][usize::from(port & 7)];
+                    if *last != Some(value) {
+                        *last = Some(value);
+                        tracing::trace!(target: IO_TARGET, "COM{} read {port:03X} = {value:02X}", index + 1);
+                    }
+                }
+            }
         }
         result
     }
@@ -1417,6 +1445,9 @@ impl SerialPorts {
         };
         if handled {
             self.event_reschedule_pending = true;
+            if let Some(index) = Self::index_of(port) {
+                tracing::debug!(target: IO_TARGET, "COM{} write {port:03X} = {value:02X}", index + 1);
+            }
         }
         handled
     }
@@ -2348,6 +2379,56 @@ mod tests {
         assert!(ports.write(0x3FF, 0x33));
         assert_eq!(ports.read(0x3FF), Some(0x33));
         assert!(ports.is_present(0));
+    }
+
+    #[test]
+    fn test_io_trace_logs_writes_and_only_changed_reads() {
+        use std::sync::{Arc, Mutex};
+        #[derive(Clone, Default)]
+        struct Captured(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Captured {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(
+                "gp64::hw::serial::io=trace",
+            ))
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mut ports = SerialPorts::new();
+        ports.write(0x2FF, 0x41);
+        // A polled register is logged once until its value changes.
+        for _ in 0..5 {
+            ports.read(0x2FF);
+        }
+        ports.write(0x2FF, 0x42);
+        ports.read(0x2FF);
+
+        let text = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        let lines: Vec<_> = text
+            .lines()
+            .map(|line| line.split("serial::io: ").nth(1).unwrap())
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "COM2 write 2FF = 41",
+                "COM2 read 2FF = 41",
+                "COM2 write 2FF = 42",
+                "COM2 read 2FF = 42",
+            ]
+        );
     }
 
     #[test]
