@@ -110,9 +110,25 @@ def native_binary(platform_name):
 def licence_file():
     return package_release.third_party_licenses(
         {"NOTICE": b"project notice\n", "THIRD_PARTY_NOTICES.md": b"third party notices\n"},
-        [{"archive_path": "dependency-notices/demo-1.0.0/LICENSE-MIT", "bytes": b"demo MIT text\n"}],
-        {"schema_version": 1, "packages": []},
+        [dependency_document("demo", "1.0.0", "LICENSE-MIT", b"demo MIT text\n")],
     )
+
+
+def section_titles(text):
+    rule = "=" * 78
+    lines = text.splitlines()
+    return [lines[index + 1] for index in range(len(lines) - 2) if lines[index] == rule and lines[index + 2] == rule]
+
+
+def dependency_document(package, version, upstream_path, content, source_url=None):
+    return {
+        "archive_path": f"dependency-notices/{package}-{version}/{upstream_path}",
+        "package": package,
+        "version": version,
+        "bytes": content,
+        "source_url": source_url,
+        "upstream_path": upstream_path,
+    }
 
 
 def create_release_archive(directory, platform_name, tag="v0.1.0", members=None, binary_mode=0o755):
@@ -371,24 +387,100 @@ class PackageReleaseTests(unittest.TestCase):
                 "NOTICE": b"gp64 notice\n",
                 "licenses/vga-MIT.txt": b"caf\xe9 MIT\n",
             },
-            [{"archive_path": "dependency-notices/demo-1.0.0/LICENSE", "bytes": b"demo\r\nMIT\r\n"}],
-            {"schema_version": 1, "packages": []},
+            [dependency_document("demo", "1.0.0", "LICENSE", b"demo\r\nMIT\r\n")],
         ).decode("utf-8")
-        headers = [line for line in combined.splitlines() if line and not line.startswith("=") and "\n" + line + "\n=" in combined]
         self.assertEqual(
-            headers,
+            section_titles(combined),
             [
                 "NOTICE",
                 "THIRD_PARTY_NOTICES.md",
                 "COPYRIGHT",
-                "dependency-notices/MANIFEST.json",
-                "dependency-notices/demo-1.0.0/LICENSE",
                 "licenses/vga-MIT.txt",
+                "Dependency licence text 1 of 1",
             ],
         )
         self.assertNotIn("\r", combined)
         self.assertIn("demo\nMIT\n", combined)
         self.assertIn("café MIT", combined)
+
+    def test_identical_dependency_texts_are_printed_once_with_every_crate(self):
+        apache = b"Apache License\nVersion 2.0, January 2004\n\nTERMS AND CONDITIONS\n"
+        rewrapped = b"   Apache License\r\n   Version 2.0, January 2004\r\n\r\n   TERMS AND\r\n   CONDITIONS\r\n"
+        combined = package_release.third_party_licenses(
+            {"NOTICE": b"gp64 notice\n", "THIRD_PARTY_NOTICES.md": b"third party\n"},
+            [
+                dependency_document("zeta", "2.0.0", "LICENSE-APACHE", apache),
+                dependency_document("alpha", "1.0.0", "LICENSE-APACHE", rewrapped),
+                dependency_document(
+                    "beta", "0.3.0", "LICENSE-APACHE", apache, source_url="https://example.invalid/beta/LICENSE"
+                ),
+                dependency_document("alpha", "1.0.0", "LICENSE-MIT", b"MIT License\nCopyright (c) Alpha\n"),
+                dependency_document("zeta", "2.0.0", "LICENSE-MIT", b"MIT License\nCopyright (c) Zeta\n"),
+            ],
+        ).decode("utf-8")
+        self.assertEqual(combined.count("TERMS AND"), 1)
+        self.assertEqual(combined.count("MIT License"), 2)
+        self.assertEqual(
+            section_titles(combined)[2:],
+            ["Dependency licence text {} of 3".format(index) for index in (1, 2, 3)],
+        )
+        self.assertIn(
+            "Applies to:\n"
+            "  alpha 1.0.0: LICENSE-APACHE\n"
+            "  beta 0.3.0: LICENSE-APACHE from https://example.invalid/beta/LICENSE\n"
+            "  zeta 2.0.0: LICENSE-APACHE\n",
+            combined,
+        )
+        self.assertIn("Applies to:\n  alpha 1.0.0: LICENSE-MIT\n\nMIT License\nCopyright (c) Alpha", combined)
+        self.assertIn("Applies to:\n  zeta 2.0.0: LICENSE-MIT\n\nMIT License\nCopyright (c) Zeta", combined)
+
+    def test_only_normal_dependencies_of_gp64_are_linked(self):
+        def package(name, source="registry+https://example.invalid/index"):
+            return {"id": name + "-id", "name": name, "version": "1.0.0", "source": source}
+
+        def edge(name, *kinds):
+            return {"pkg": name + "-id", "dep_kinds": [{"kind": kind, "target": None} for kind in kinds]}
+
+        metadata = {
+            "packages": [
+                package("gp64", source=None),
+                package("gp64-cpu", source=None),
+                package("gp64-hygiene", source=None),
+                package("shared"),
+                package("transitive"),
+                package("bench-only"),
+                package("build-only"),
+                package("both-normal-and-dev"),
+            ],
+            "resolve": {
+                "nodes": [
+                    {"id": "gp64-id", "deps": [
+                        edge("gp64-cpu", None),
+                        edge("bench-only", "dev"),
+                        edge("build-only", "build"),
+                        edge("both-normal-and-dev", "dev", None),
+                    ]},
+                    {"id": "gp64-cpu-id", "deps": [edge("shared", None)]},
+                    {"id": "gp64-hygiene-id", "deps": [edge("shared", None)]},
+                    {"id": "shared-id", "deps": [edge("transitive", None)]},
+                    {"id": "transitive-id", "deps": []},
+                    {"id": "bench-only-id", "deps": [edge("transitive", None)]},
+                    {"id": "build-only-id", "deps": []},
+                    {"id": "both-normal-and-dev-id", "deps": []},
+                ]
+            },
+        }
+        linked = package_release.linked_packages(metadata)
+        self.assertEqual(
+            sorted(item["name"] for item in linked["packages"]),
+            ["both-normal-and-dev", "gp64", "gp64-cpu", "shared", "transitive"],
+        )
+        with self.assertRaisesRegex(package_release.PackagingError, "did not resolve"):
+            package_release.linked_packages({"packages": metadata["packages"][1:], "resolve": metadata["resolve"]})
+        with self.assertRaisesRegex(package_release.PackagingError, "did not resolve"):
+            package_release.linked_packages(
+                {"packages": metadata["packages"], "resolve": {"nodes": metadata["resolve"]["nodes"][1:]}}
+            )
 
     def test_release_archives_are_deterministic_with_exactly_three_members(self):
         with tempfile.TemporaryDirectory() as temp:

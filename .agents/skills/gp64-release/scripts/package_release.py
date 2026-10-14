@@ -435,6 +435,8 @@ def _fallback_file(package_name, package_version, entry, asset_root):
         results.append(
             {
                 "archive_path": safe_relative_path(archive_path).as_posix(),
+                "package": package_name,
+                "version": package_version,
                 "bytes": content,
                 "origin": "verified-fallback",
                 "source_url": source_url,
@@ -515,6 +517,8 @@ def collect_package_license_files(package, fallback_entries, asset_root, exclude
             results.append(
                 {
                     "archive_path": safe_relative_path(archive_path).as_posix(),
+                    "package": name,
+                    "version": version,
                     "bytes": content,
                     "origin": "crate",
                     "source_url": None,
@@ -611,10 +615,6 @@ def collect_dependency_documents(metadata, asset_root):
     return documents, {"schema_version": 1, "packages": packages}
 
 
-def _json_bytes(value):
-    return (json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":")) + "\n").encode("utf-8")
-
-
 def _read_repo_file(repo, relative):
     rel = safe_relative_path(relative, "repository legal document path")
     source = Path(repo).joinpath(*rel.parts)
@@ -661,24 +661,68 @@ def repository_legal_documents(repo):
     return documents
 
 
-def third_party_licenses(repo_documents, dependency_documents, dependency_manifest):
-    """One plain-text file holding every notice and licence text, each under its path."""
-    documents = dict(repo_documents)
-    for item in dependency_documents:
-        documents[item["archive_path"]] = item["bytes"]
-    documents["dependency-notices/MANIFEST.json"] = _json_bytes(dependency_manifest)
-    missing = [name for name in LEADING_DOCUMENTS if name not in documents]
+def _section(title, body):
+    rule = "=" * 78
+    return "{0}\n{1}\n{0}\n\n{2}\n\n".format(rule, title, body.rstrip())
+
+
+def _required_text(content, name):
+    text = legal_text(content)
+    if text is None:
+        raise PackagingError("legal document is not text: " + name)
+    return text.decode("utf-8")
+
+
+def third_party_licenses(repo_documents, dependency_documents):
+    """One plain-text file: the repository notices by path, then each distinct
+    dependency licence text once, headed by every crate file it covers."""
+    missing = [name for name in LEADING_DOCUMENTS if name not in repo_documents]
     if missing:
         raise PackagingError("combined licence file is missing a leading notice")
-    order = list(LEADING_DOCUMENTS) + sorted(name for name in documents if name not in LEADING_DOCUMENTS)
-    rule = "=" * 78
-    sections = []
-    for name in order:
-        text = legal_text(documents[name])
-        if text is None:
-            raise PackagingError("legal document is not text: " + name)
-        sections.append("{0}\n{1}\n{0}\n\n{2}\n\n".format(rule, name, text.decode("utf-8").rstrip()))
+    order = list(LEADING_DOCUMENTS) + sorted(name for name in repo_documents if name not in LEADING_DOCUMENTS)
+    sections = [_section(name, _required_text(repo_documents[name], name)) for name in order]
+
+    # Texts that differ only in whitespace or line wrapping are the same licence.
+    groups = {}
+    for item in dependency_documents:
+        text = _required_text(item["bytes"], item["archive_path"])
+        key = " ".join(text.split())
+        source = item["upstream_path"]
+        if item.get("source_url"):
+            source += " from " + item["source_url"]
+        groups.setdefault(key, (text, set()))[1].add(
+            "{} {}: {}".format(item["package"], item["version"], source)
+        )
+    ordered = sorted(groups.values(), key=lambda group: sorted(group[1])[0])
+    for index, (text, users) in enumerate(ordered, 1):
+        title = "Dependency licence text {} of {}".format(index, len(ordered))
+        body = "Applies to:\n{}\n\n{}".format("\n".join("  " + user for user in sorted(users)), text)
+        sections.append(_section(title, body))
     return "".join(sections).encode("utf-8")
+
+
+def linked_packages(metadata, root_name="gp64"):
+    """Packages compiled into the root binary: its normal dependencies, transitively.
+    Development and build-script dependencies never reach the shipped executable."""
+    packages = {package["id"]: package for package in metadata["packages"]}
+    nodes = {node["id"]: node for node in metadata.get("resolve", {}).get("nodes", [])}
+    roots = [
+        package["id"]
+        for package in metadata["packages"]
+        if package.get("name") == root_name and package.get("source") is None
+    ]
+    if len(roots) != 1 or roots[0] not in nodes:
+        raise PackagingError("cargo metadata did not resolve the {} package".format(root_name))
+    linked, pending = set(), [roots[0]]
+    while pending:
+        package_id = pending.pop()
+        if package_id in linked:
+            continue
+        linked.add(package_id)
+        for dependency in nodes[package_id].get("deps", []):
+            if any(kind.get("kind") is None for kind in dependency.get("dep_kinds", [])):
+                pending.append(dependency["pkg"])
+    return {"packages": [packages[package_id] for package_id in sorted(linked)]}
 
 
 def zip_timestamp(timestamp):
@@ -760,10 +804,8 @@ def package_binary(repo_root, binary, tag, revision, output_dir):
     binary_bytes = verify_binary_architecture(binary, host.platform_name)
     metadata = load_target_metadata(checkout.root, host.target)
     fallback_root = Path(__file__).resolve().parents[1] / "assets" / "dependency-licenses"
-    documents, dependency_manifest = collect_dependency_documents(metadata, fallback_root)
-    licences = third_party_licenses(
-        repository_legal_documents(checkout.root), documents, dependency_manifest
-    )
+    documents, _ = collect_dependency_documents(linked_packages(metadata), fallback_root)
+    licences = third_party_licenses(repository_legal_documents(checkout.root), documents)
     members = [
         (host.binary_name, binary_bytes, 0o755),
         (LICENSE_NAME, legal_text(_read_repo_file(checkout.root, LICENSE_NAME)), 0o644),
@@ -876,7 +918,7 @@ def verify_binary_archive(archive_path, tag, platform_name):
         licences.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise PackagingError("third-party licence file is not UTF-8 text") from exc
-    for name in LEADING_DOCUMENTS + ("dependency-notices/MANIFEST.json",):
+    for name in LEADING_DOCUMENTS:
         if "\n{}\n".format(name).encode("utf-8") not in licences:
             raise PackagingError("third-party licence file is missing " + name)
     return {"archive": archive.name, "target": host.target, "sha256": sha256_file(archive)}

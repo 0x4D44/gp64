@@ -100,8 +100,9 @@ python3 .agents/skills/gp64-release/scripts/package_release.py verify-binary --a
 
 `binary` refuses a dirty checkout, a wrong origin, tag, revision or version, a
 wrong architecture, and a dependency without licence text.
-`THIRD_PARTY_LICENSES.txt` lists the repository notices and every licence text for
-crates Cargo resolves for this target. Record the native library dependencies from
+`THIRD_PARTY_LICENSES.txt` holds the repository notices, then each distinct licence
+text of the crates compiled into `gp64` for this target (normal dependencies only),
+printed once under the list of crates it applies to. Record the native library dependencies from
 `dumpbin`/`otool`. An unexplained non-system dependency blocks the release until
 its redistribution and runtime requirements are accounted for.
 
