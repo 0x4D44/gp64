@@ -39,6 +39,10 @@ const WORD_ALLOWLIST: &[&str] = &[
 // explicitly reviewed and allowed it; other commits and edited lines still fail.
 const COMMIT_WORD_ALLOWLIST: &[&str] = &[
     concat!("commit/617485e633b212865b3b18d15ce16bea98a25d0a:The drop-in launcher runs ", "F1", "GP", ".BAT if present, else GP.EXE; those two names live only in launcher.rs. An owned test, ignored without GP64_GAME_DIR, launches the default headless at 20M cycles/s. It checks that both batch programs start, that no exception reaches an uninstalled vector, that a steady non-blank graphics frame appears, and that a key press changes the frame. Generic properties only."),
+    // Pushed 2026-10-14 before the rule was noticed; they cannot be reworded.
+    concat!("commit/141d891b277be27c7cc8dba022fc99f36be87311:thread at frame boundaries, so mdem's existing ", "F1", "GP", " .emu scripts drive"),
+    concat!("commit/83cf2517b7cf309a3419bc7e66d18ea137b72598:as ", "F1", "GP", " opening its modem screen, the guest stayed stuck near 15 MHz"),
+    concat!("commit/79693562fce87bac08046e9b84ca3b4fbaba3241:interpreter run. ", "F1", "GP", "'s screen code makes far calls in a hot loop, and"),
 ];
 // The application icon master is generated artwork Arthur chose; the sized
 // icons are shrunk from it.
