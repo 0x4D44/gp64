@@ -12,6 +12,7 @@ mod logging;
 mod output;
 mod overlay;
 mod pacing;
+mod placement;
 mod ring;
 mod scaler;
 mod script;
@@ -124,6 +125,7 @@ fn run() -> Result<u8> {
         proxy: events.create_proxy(),
         audio,
         window: None,
+        placement: None,
         surface: None,
         emulation: None,
         keyboard: input::Keyboard::default(),
@@ -207,6 +209,8 @@ struct App {
     proxy: winit::event_loop::EventLoopProxy<Notice>,
     audio: Option<device_audio::Output>,
     window: Option<Arc<Window>>,
+    /// Follows the window's place and size to restore them next run.
+    placement: Option<placement::Tracker>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     emulation: Option<Emulation>,
     keyboard: input::Keyboard,
@@ -522,18 +526,19 @@ impl ApplicationHandler<Notice> for App {
             return;
         }
         let result = (|| -> Result<()> {
-            let window = Arc::new(
-                events.create_window(
-                    Window::default_attributes()
-                        .with_title("gp64")
-                        .with_inner_size(winit::dpi::LogicalSize::new(960.0, 720.0))
-                        .with_fullscreen(
-                            self.saved
-                                .fullscreen
-                                .then_some(Fullscreen::Borderless(None)),
-                        ),
-                )?,
+            let (placement, attributes) = placement::Tracker::restore(
+                Window::default_attributes()
+                    .with_title("gp64")
+                    .with_fullscreen(
+                        self.saved
+                            .fullscreen
+                            .then_some(Fullscreen::Borderless(None)),
+                    ),
+                events.available_monitors(),
+                winit::dpi::LogicalSize::new(960.0, 720.0),
             );
+            let window = Arc::new(events.create_window(attributes)?);
+            self.placement = Some(placement);
             set_icons(&window);
             let context = softbuffer::Context::new(window.clone())
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
@@ -588,6 +593,11 @@ impl ApplicationHandler<Notice> for App {
         }
         match event {
             WindowEvent::CloseRequested => events.exit(),
+            WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                if let Some(placement) = &mut self.placement {
+                    placement.changed();
+                }
+            }
             WindowEvent::RedrawRequested => {
                 if let Err(error) = self.draw() {
                     self.fail(events, error);
@@ -675,6 +685,9 @@ impl ApplicationHandler<Notice> for App {
         }
         self.drive_links();
         self.sync_pause();
+        if let (Some(placement), Some(window)) = (&mut self.placement, &self.window) {
+            placement.sample(window);
+        }
         let now = Instant::now();
         if self.hint_until.is_some_and(|until| now >= until) {
             self.hint_until = None;
@@ -703,6 +716,12 @@ impl ApplicationHandler<Notice> for App {
             self.next_redraw = now + Duration::from_millis(16);
         }
         events.set_control_flow(ControlFlow::WaitUntil(self.next_redraw));
+    }
+    fn exiting(&mut self, _events: &ActiveEventLoop) {
+        if let (Some(placement), Some(window)) = (&mut self.placement, &self.window) {
+            placement.sample(window);
+            placement.save();
+        }
     }
 }
 
