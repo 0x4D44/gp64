@@ -1,0 +1,1470 @@
+{
+  "schema_version": 1,
+  "packages": [
+    {
+      "name": "anes",
+      "version": "0.1.6",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/zrzka/anes-rs",
+      "commit": "378ac7461ecac29fde9e10df7b08359d1315a9ad",
+      "path_in_vcs": "",
+      "files": [
+        {
+          "path": "zrzka/anes-rs/378ac7461ecac29fde9e10df7b08359d1315a9ad/LICENSE-APACHE.txt",
+          "source_url": "https://raw.githubusercontent.com/zrzka/anes-rs/378ac7461ecac29fde9e10df7b08359d1315a9ad/LICENSE-APACHE",
+          "upstream_path": "LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "path": "zrzka/anes-rs/378ac7461ecac29fde9e10df7b08359d1315a9ad/LICENSE-MIT.txt",
+          "source_url": "https://raw.githubusercontent.com/zrzka/anes-rs/378ac7461ecac29fde9e10df7b08359d1315a9ad/LICENSE-MIT",
+          "upstream_path": "LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "block2",
+      "version": "0.5.1",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "4fc083f1c6d6784577e38b0ee8dbd344481e2fd2",
+      "path_in_vcs": "crates/block2",
+      "files": [
+        {
+          "path": "madsmtm/objc2/4fc083f1c6d6784577e38b0ee8dbd344481e2fd2/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/4fc083f1c6d6784577e38b0ee8dbd344481e2fd2/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "block2",
+      "version": "0.6.2",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "b4167b582b2f75f9a1be75495c41b765344fd03c",
+      "path_in_vcs": "crates/block2",
+      "files": [
+        {
+          "path": "madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/LICENSE.md.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/LICENSE.md",
+          "upstream_path": "LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+        },
+        {
+          "path": "spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+          "upstream_path": "text/MIT.txt",
+          "kind": "standard-license-text",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+        },
+        {
+          "path": "madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/crates/block2/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/crates/block2/Cargo.toml",
+          "upstream_path": "crates/block2/Cargo.toml",
+          "sha256": "db3c4fb66b05e8a6e8aa4b12b498ec628b6a710cc2411945d174fa48783890ff",
+          "source_sha256": "d18aec0c39956f1a29b6d157c13ec51ce53d7c2a2982c307528215f8870720ac",
+          "extracted_lines": [
+            [
+              1,
+              19
+            ]
+          ]
+        },
+        {
+          "path": "madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/Cargo.toml.txt",
+          "upstream_path": "Cargo.toml",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/Cargo.toml",
+          "source_sha256": "f93fce3a2814c16597140137b109c53042c0ae74909fd123a8a4d1f7d35090da",
+          "sha256": "128d01a3cf35d029210d657ade9da430d33ab8a8eda1d4184730fa8bbb583c25",
+          "extracted_lines": [
+            [
+              10,
+              29
+            ]
+          ],
+          "kind": "upstream-workspace-declaration"
+        }
+      ],
+      "provenance_kind": "standard-license-plus-upstream-declaration",
+      "selected_license": "MIT",
+      "documentation_url": "https://spdx.org/licenses/MIT.html"
+    },
+    {
+      "name": "cesu8",
+      "version": "1.1.0",
+      "license": "Apache-2.0/MIT",
+      "selected_license": "MIT",
+      "repository": "https://github.com/emk/cesu8-rs",
+      "commit": "f18962a9de5189f21600b7ff2898845157df4447",
+      "path_in_vcs": "",
+      "provenance_kind": "published-files-matched-to-upstream-commit",
+      "files": [
+        {
+          "path": "emk/cesu8-rs/f18962a9de5189f21600b7ff2898845157df4447/COPYRIGHT-RUST.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/emk/cesu8-rs/f18962a9de5189f21600b7ff2898845157df4447/COPYRIGHT-RUST.txt",
+          "upstream_path": "COPYRIGHT-RUST.txt",
+          "sha256": "5ca77347e58205d3b543c04a9c5bdd11d20a9f3108a7b246640edffa999b5f35"
+        },
+        {
+          "path": "emk/cesu8-rs/f18962a9de5189f21600b7ff2898845157df4447/src/lib.rs.txt",
+          "source_url": "https://raw.githubusercontent.com/emk/cesu8-rs/f18962a9de5189f21600b7ff2898845157df4447/src/lib.rs",
+          "upstream_path": "src/lib.rs",
+          "sha256": "869f33d1c6a0c94b3200413d8c9ebdfe50351d7f69b250962758400b0d295f3d",
+          "source_sha256": "402f647c80ccaa86f43a5571cc081aa66777d2a538ce9d9dc52a7e588ef137c9",
+          "extracted_lines": [
+            [
+              1,
+              8
+            ]
+          ]
+        },
+        {
+          "path": "emk/cesu8-rs/f18962a9de5189f21600b7ff2898845157df4447/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/emk/cesu8-rs/f18962a9de5189f21600b7ff2898845157df4447/Cargo.toml",
+          "upstream_path": "Cargo.toml",
+          "sha256": "2b206aeae255dc1d6ec0dedf10f1e9c3fd79ae83a7c74877923013acaf73c756",
+          "source_sha256": "78e66dd24c12e0ac858e7524cdd7d51d1eee753c1e9c32e5b915dc9f1d767870",
+          "extracted_lines": [
+            [
+              1,
+              13
+            ]
+          ]
+        },
+        {
+          "path": "spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+          "upstream_path": "text/MIT.txt",
+          "kind": "standard-license-text",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+        }
+      ],
+      "documentation_url": "https://spdx.org/licenses/MIT.html",
+      "matched_published_files": 4
+    },
+    {
+      "name": "dasp_sample",
+      "version": "0.11.0",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rustaudio/sample",
+      "commit": "97c3bb9b2363c0b46ac1633858bf1054fd02a980",
+      "path_in_vcs": "",
+      "files": [
+        {
+          "path": "rustaudio/sample/97c3bb9b2363c0b46ac1633858bf1054fd02a980/LICENSE-APACHE.txt",
+          "source_url": "https://raw.githubusercontent.com/rustaudio/sample/97c3bb9b2363c0b46ac1633858bf1054fd02a980/LICENSE-APACHE",
+          "upstream_path": "LICENSE-APACHE",
+          "sha256": "756c8d2ab2dc24f256e1455b5f03937f4933d83d7bc9f2d55009fc962377d512"
+        },
+        {
+          "path": "rustaudio/sample/97c3bb9b2363c0b46ac1633858bf1054fd02a980/LICENSE-MIT.txt",
+          "source_url": "https://raw.githubusercontent.com/rustaudio/sample/97c3bb9b2363c0b46ac1633858bf1054fd02a980/LICENSE-MIT",
+          "upstream_path": "LICENSE-MIT",
+          "sha256": "b1d6df41ed3aa96806e74c729444d7c121d90e6660a6aed01d298e03fde475a0"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "dispatch",
+      "version": "0.2.0",
+      "license": "MIT",
+      "repository": "https://github.com/SSheldon/rust-dispatch",
+      "commit": "82d6c7a5b75dc0c71c3f46f87bb6c16a476f7748",
+      "path_in_vcs": "",
+      "files": [
+        {
+          "path": "SSheldon/rust-dispatch/82d6c7a5b75dc0c71c3f46f87bb6c16a476f7748/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/SSheldon/rust-dispatch/82d6c7a5b75dc0c71c3f46f87bb6c16a476f7748/Cargo.toml",
+          "upstream_path": "Cargo.toml",
+          "sha256": "05c60b829931ef7f1f130735843c11f5cf9cc69546eca5fc941d014781c68e31",
+          "source_sha256": "05c60b829931ef7f1f130735843c11f5cf9cc69546eca5fc941d014781c68e31",
+          "extracted_lines": [
+            [
+              1,
+              20
+            ]
+          ]
+        },
+        {
+          "path": "spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+          "upstream_path": "text/MIT.txt",
+          "kind": "standard-license-text",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+        }
+      ],
+      "provenance_kind": "standard-license-plus-upstream-declaration",
+      "selected_license": "MIT",
+      "documentation_url": "https://spdx.org/licenses/MIT.html"
+    },
+    {
+      "name": "dispatch2",
+      "version": "0.3.1",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "8852b424193ca41602281b3d7540d7c8ed51e49a",
+      "path_in_vcs": "crates/dispatch2",
+      "files": [
+        {
+          "path": "madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md",
+          "upstream_path": "LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+        },
+        {
+          "path": "spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+          "upstream_path": "text/MIT.txt",
+          "kind": "standard-license-text",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+        },
+        {
+          "path": "madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/crates/dispatch2/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/crates/dispatch2/Cargo.toml",
+          "upstream_path": "crates/dispatch2/Cargo.toml",
+          "sha256": "f69866f66939a8a8e6de2faacb0ba89febf11805e2aa8a22b64e318f8b0180c1",
+          "source_sha256": "f6aeef4bfe348b9e65e33db2bfb079be4149f9ab0f4b0b3bf3f5d04c144545af",
+          "extracted_lines": [
+            [
+              4,
+              15
+            ]
+          ]
+        },
+        {
+          "path": "madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/Cargo.toml.txt",
+          "upstream_path": "Cargo.toml",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/Cargo.toml",
+          "source_sha256": "f93fce3a2814c16597140137b109c53042c0ae74909fd123a8a4d1f7d35090da",
+          "sha256": "128d01a3cf35d029210d657ade9da430d33ab8a8eda1d4184730fa8bbb583c25",
+          "extracted_lines": [
+            [
+              10,
+              29
+            ]
+          ],
+          "kind": "upstream-workspace-declaration"
+        }
+      ],
+      "provenance_kind": "standard-license-plus-upstream-declaration",
+      "selected_license": "MIT",
+      "documentation_url": "https://spdx.org/licenses/MIT.html"
+    },
+    {
+      "name": "dwrote",
+      "version": "0.11.5",
+      "license": "MPL-2.0",
+      "repository": "https://github.com/servo/dwrote-rs",
+      "commit": "5bbe910f7156213cdbaca4e1addfe85ea8b421ef",
+      "path_in_vcs": "",
+      "files": [
+        {
+          "path": "servo/dwrote-rs/5bbe910f7156213cdbaca4e1addfe85ea8b421ef/src/lib.rs.txt",
+          "source_url": "https://raw.githubusercontent.com/servo/dwrote-rs/5bbe910f7156213cdbaca4e1addfe85ea8b421ef/src/lib.rs",
+          "upstream_path": "src/lib.rs",
+          "sha256": "fbb692bbd64e4c5c7905421273af7318775a626e736435ba4b8ea725bc20ce87",
+          "source_sha256": "766d05ab96b05bf60a8aeb4fba86ffa05e87a8954dec23e4b52f7eaa6f92eb50",
+          "extracted_lines": [
+            [
+              1,
+              4
+            ]
+          ]
+        },
+        {
+          "path": "mozilla/MPL-2.0.txt",
+          "source_url": "https://www.mozilla.org/media/MPL/2.0/index.txt",
+          "upstream_path": "MPL/2.0/index.txt",
+          "kind": "standard-license-text",
+          "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+        }
+      ],
+      "provenance_kind": "upstream-header-plus-standard-license",
+      "selected_license": "MPL-2.0"
+    },
+    {
+      "name": "iced-x86",
+      "version": "1.21.0",
+      "license": "MIT",
+      "repository": "https://github.com/icedland/iced",
+      "commit": "c50f29b7bc305696895c075f3fc7719751426b12",
+      "path_in_vcs": "src/rust/iced-x86",
+      "files": [
+        {
+          "path": "icedland/iced/c50f29b7bc305696895c075f3fc7719751426b12/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/icedland/iced/c50f29b7bc305696895c075f3fc7719751426b12/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "93a47598376fd3f276b631e75149340087153c6ff1635a53c5790249e9124e2d"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "ieee-apsqrt",
+      "version": "0.1.1",
+      "license": "Apache-2.0 WITH LLVM-exception",
+      "repository": "https://github.com/SolraBizna/ieee-apsqrt",
+      "commit": "5e9d652c0e16f325a35a43c5de49f30ca087b16e",
+      "path_in_vcs": "",
+      "files": [
+        {
+          "path": "SolraBizna/ieee-apsqrt/5e9d652c0e16f325a35a43c5de49f30ca087b16e/README.md.txt",
+          "source_url": "https://raw.githubusercontent.com/SolraBizna/ieee-apsqrt/5e9d652c0e16f325a35a43c5de49f30ca087b16e/README.md",
+          "upstream_path": "README.md",
+          "sha256": "c58371d39ea5fb8533c4ed452361687fb7fac97085215b2d182604b391e886de"
+        },
+        {
+          "path": "rust-lang/rustc_apfloat/eeaacad81247af65d4043cb3e32d023a652d7951/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/rust-lang/rustc_apfloat/eeaacad81247af65d4043cb3e32d023a652d7951/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "kind": "license-text-linked-by-upstream",
+          "sha256": "981f4155fbd55dcf13745e2ed508e6fa30aa90f9f668c4ef0f7686980e5d8521"
+        }
+      ],
+      "provenance_kind": "upstream-declaration-plus-linked-license",
+      "selected_license": "Apache-2.0 WITH LLVM-exception"
+    },
+    {
+      "name": "jni",
+      "version": "0.22.4",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/jni-rs/jni-rs",
+      "commit": "5ae9458a4ec44c5318f37ddc7569c1d4ae8a69e7",
+      "path_in_vcs": "crates/jni",
+      "files": [
+        {
+          "path": "jni-rs/jni-rs/5ae9458a4ec44c5318f37ddc7569c1d4ae8a69e7/LICENSE-APACHE.txt",
+          "source_url": "https://raw.githubusercontent.com/jni-rs/jni-rs/5ae9458a4ec44c5318f37ddc7569c1d4ae8a69e7/LICENSE-APACHE",
+          "upstream_path": "LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "path": "jni-rs/jni-rs/5ae9458a4ec44c5318f37ddc7569c1d4ae8a69e7/LICENSE-MIT.txt",
+          "source_url": "https://raw.githubusercontent.com/jni-rs/jni-rs/5ae9458a4ec44c5318f37ddc7569c1d4ae8a69e7/LICENSE-MIT",
+          "upstream_path": "LICENSE-MIT",
+          "sha256": "fea1d5bf3dd71605ce5d7d2ff695c1837e914c77195e523a86b5391716477960"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "jni-macros",
+      "version": "0.22.4",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/jni-rs/jni-rs",
+      "commit": "33045a124105c939d1e2cbdcb5a39e5d868ffa03",
+      "path_in_vcs": "crates/jni-macros",
+      "files": [
+        {
+          "path": "jni-rs/jni-rs/33045a124105c939d1e2cbdcb5a39e5d868ffa03/LICENSE-APACHE.txt",
+          "source_url": "https://raw.githubusercontent.com/jni-rs/jni-rs/33045a124105c939d1e2cbdcb5a39e5d868ffa03/LICENSE-APACHE",
+          "upstream_path": "LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "path": "jni-rs/jni-rs/33045a124105c939d1e2cbdcb5a39e5d868ffa03/LICENSE-MIT.txt",
+          "source_url": "https://raw.githubusercontent.com/jni-rs/jni-rs/33045a124105c939d1e2cbdcb5a39e5d868ffa03/LICENSE-MIT",
+          "upstream_path": "LICENSE-MIT",
+          "sha256": "fea1d5bf3dd71605ce5d7d2ff695c1837e914c77195e523a86b5391716477960"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "jni-sys-macros",
+      "version": "0.4.1",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/jni-rs/jni-sys",
+      "commit": "64d77b7a5f119d7b55b4e2c169a4668067ff59e6",
+      "path_in_vcs": "jni-sys-macros",
+      "files": [
+        {
+          "path": "jni-rs/jni-sys/64d77b7a5f119d7b55b4e2c169a4668067ff59e6/LICENSE-APACHE.txt",
+          "source_url": "https://raw.githubusercontent.com/jni-rs/jni-sys/64d77b7a5f119d7b55b4e2c169a4668067ff59e6/LICENSE-APACHE",
+          "upstream_path": "LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08"
+        },
+        {
+          "path": "jni-rs/jni-sys/64d77b7a5f119d7b55b4e2c169a4668067ff59e6/LICENSE-MIT.txt",
+          "source_url": "https://raw.githubusercontent.com/jni-rs/jni-sys/64d77b7a5f119d7b55b4e2c169a4668067ff59e6/LICENSE-MIT",
+          "upstream_path": "LICENSE-MIT",
+          "sha256": "1d85bd754b04ceec93e98e890edd1fa3c6a22e81bcb32135806beeccefa51cd1"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "ndk",
+      "version": "0.9.0",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rust-mobile/ndk",
+      "commit": "49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25",
+      "path_in_vcs": "ndk",
+      "files": [
+        {
+          "path": "rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-APACHE.txt",
+          "source_url": "https://raw.githubusercontent.com/rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-APACHE",
+          "upstream_path": "LICENSE-APACHE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        },
+        {
+          "path": "rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-MIT.txt",
+          "source_url": "https://raw.githubusercontent.com/rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-MIT",
+          "upstream_path": "LICENSE-MIT",
+          "sha256": "508a77d2e7b51d98adeed32648ad124b7b30241a8e70b2e72c99f92d8e5874d1"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "ndk-context",
+      "version": "0.1.1",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rust-windowing/android-ndk-rs",
+      "commit": "10f2ba388fca20f7349996ebae26ccda7a6fda5c",
+      "path_in_vcs": "ndk-context",
+      "files": [
+        {
+          "path": "rust-windowing/android-ndk-rs/10f2ba388fca20f7349996ebae26ccda7a6fda5c/LICENSE-APACHE.txt",
+          "source_url": "https://raw.githubusercontent.com/rust-windowing/android-ndk-rs/10f2ba388fca20f7349996ebae26ccda7a6fda5c/LICENSE-APACHE",
+          "upstream_path": "LICENSE-APACHE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        },
+        {
+          "path": "rust-windowing/android-ndk-rs/10f2ba388fca20f7349996ebae26ccda7a6fda5c/LICENSE-MIT.txt",
+          "source_url": "https://raw.githubusercontent.com/rust-windowing/android-ndk-rs/10f2ba388fca20f7349996ebae26ccda7a6fda5c/LICENSE-MIT",
+          "upstream_path": "LICENSE-MIT",
+          "sha256": "508a77d2e7b51d98adeed32648ad124b7b30241a8e70b2e72c99f92d8e5874d1"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "ndk-sys",
+      "version": "0.6.0+11769913",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rust-mobile/ndk",
+      "commit": "49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25",
+      "path_in_vcs": "ndk-sys",
+      "files": [
+        {
+          "path": "rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-APACHE.txt",
+          "source_url": "https://raw.githubusercontent.com/rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-APACHE",
+          "upstream_path": "LICENSE-APACHE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        },
+        {
+          "path": "rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-MIT.txt",
+          "source_url": "https://raw.githubusercontent.com/rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-MIT",
+          "upstream_path": "LICENSE-MIT",
+          "sha256": "508a77d2e7b51d98adeed32648ad124b7b30241a8e70b2e72c99f92d8e5874d1"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "objc-sys",
+      "version": "0.3.5",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "4fc083f1c6d6784577e38b0ee8dbd344481e2fd2",
+      "path_in_vcs": "crates/objc-sys",
+      "files": [
+        {
+          "path": "madsmtm/objc2/4fc083f1c6d6784577e38b0ee8dbd344481e2fd2/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/4fc083f1c6d6784577e38b0ee8dbd344481e2fd2/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "objc2",
+      "version": "0.5.3",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "5237cbf081d04ef75a1f6a207b4018e7c1ae7438",
+      "path_in_vcs": "crates/objc2",
+      "files": [
+        {
+          "path": "madsmtm/objc2/5237cbf081d04ef75a1f6a207b4018e7c1ae7438/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/5237cbf081d04ef75a1f6a207b4018e7c1ae7438/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "objc2",
+      "version": "0.6.5",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "d7d2fa23ceaa5e6096c923b081040e5d81b3b9df",
+      "path_in_vcs": "crates/objc2",
+      "files": [
+        {
+          "path": "madsmtm/objc2/d7d2fa23ceaa5e6096c923b081040e5d81b3b9df/LICENSE.md.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/d7d2fa23ceaa5e6096c923b081040e5d81b3b9df/LICENSE.md",
+          "upstream_path": "LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+        },
+        {
+          "path": "spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+          "upstream_path": "text/MIT.txt",
+          "kind": "standard-license-text",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+        },
+        {
+          "path": "madsmtm/objc2/d7d2fa23ceaa5e6096c923b081040e5d81b3b9df/crates/objc2/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/d7d2fa23ceaa5e6096c923b081040e5d81b3b9df/crates/objc2/Cargo.toml",
+          "upstream_path": "crates/objc2/Cargo.toml",
+          "sha256": "c4b61e29126cabcdbafae70f6ece2e1edc1c50bea77dcea4578fe19c20c13118",
+          "source_sha256": "4a1e1561612efc4a8aea4dd574c781f6215fa5416696425227558fc782353cba",
+          "extracted_lines": [
+            [
+              1,
+              20
+            ]
+          ]
+        },
+        {
+          "path": "madsmtm/objc2/d7d2fa23ceaa5e6096c923b081040e5d81b3b9df/Cargo.toml.txt",
+          "upstream_path": "Cargo.toml",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/d7d2fa23ceaa5e6096c923b081040e5d81b3b9df/Cargo.toml",
+          "source_sha256": "f93fce3a2814c16597140137b109c53042c0ae74909fd123a8a4d1f7d35090da",
+          "sha256": "128d01a3cf35d029210d657ade9da430d33ab8a8eda1d4184730fa8bbb583c25",
+          "extracted_lines": [
+            [
+              10,
+              29
+            ]
+          ],
+          "kind": "upstream-workspace-declaration"
+        }
+      ],
+      "provenance_kind": "standard-license-plus-upstream-declaration",
+      "selected_license": "MIT",
+      "documentation_url": "https://spdx.org/licenses/MIT.html"
+    },
+    {
+      "name": "objc2-app-kit",
+      "version": "0.2.2",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "e282618be4c3a3b9542957e0c8540e9588472ce8",
+      "path_in_vcs": "framework-crates/objc2-app-kit",
+      "files": [
+        {
+          "path": "madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "objc2-audio-toolbox",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+      "path_in_vcs": "framework-crates/objc2-audio-toolbox",
+      "files": [
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "upstream_path": "LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+        },
+        {
+          "path": "spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+          "upstream_path": "text/MIT.txt",
+          "kind": "standard-license-text",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-audio-toolbox/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-audio-toolbox/Cargo.toml",
+          "upstream_path": "framework-crates/objc2-audio-toolbox/Cargo.toml",
+          "sha256": "69ee1dd29130f4a521d9f3d046865ee2264e88e9f7de52350b211035a4752003",
+          "source_sha256": "87aa116c2f121808b33f1240073232ce4a645247229a855b25168978b9b85faa",
+          "extracted_lines": [
+            [
+              4,
+              14
+            ]
+          ]
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml.txt",
+          "upstream_path": "Cargo.toml",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+          "source_sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+          "sha256": "4a4c3921aa69f5eb8e90ce36fe7984f89eb85d3dc50bf6f4a55a9260869a86b0",
+          "extracted_lines": [
+            [
+              10,
+              29
+            ]
+          ],
+          "kind": "upstream-workspace-declaration"
+        }
+      ],
+      "provenance_kind": "standard-license-plus-upstream-declaration",
+      "selected_license": "MIT",
+      "documentation_url": "https://spdx.org/licenses/MIT.html"
+    },
+    {
+      "name": "objc2-avf-audio",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+      "path_in_vcs": "framework-crates/objc2-avf-audio",
+      "files": [
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "upstream_path": "LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+        },
+        {
+          "path": "spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+          "upstream_path": "text/MIT.txt",
+          "kind": "standard-license-text",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-avf-audio/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-avf-audio/Cargo.toml",
+          "upstream_path": "framework-crates/objc2-avf-audio/Cargo.toml",
+          "sha256": "6de4378a4983b02ca2f3f6ba407dbdadee286fe4e6cdeefcc34cf1c07f522c0e",
+          "source_sha256": "173f18909704fb0bb1e6df210c73d750bd8cfaa3b8cf4732a8ed311b879ab399",
+          "extracted_lines": [
+            [
+              4,
+              14
+            ]
+          ]
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml.txt",
+          "upstream_path": "Cargo.toml",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+          "source_sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+          "sha256": "4a4c3921aa69f5eb8e90ce36fe7984f89eb85d3dc50bf6f4a55a9260869a86b0",
+          "extracted_lines": [
+            [
+              10,
+              29
+            ]
+          ],
+          "kind": "upstream-workspace-declaration"
+        }
+      ],
+      "provenance_kind": "standard-license-plus-upstream-declaration",
+      "selected_license": "MIT",
+      "documentation_url": "https://spdx.org/licenses/MIT.html"
+    },
+    {
+      "name": "objc2-cloud-kit",
+      "version": "0.2.2",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "e282618be4c3a3b9542957e0c8540e9588472ce8",
+      "path_in_vcs": "framework-crates/objc2-cloud-kit",
+      "files": [
+        {
+          "path": "madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "objc2-contacts",
+      "version": "0.2.2",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "e282618be4c3a3b9542957e0c8540e9588472ce8",
+      "path_in_vcs": "framework-crates/objc2-contacts",
+      "files": [
+        {
+          "path": "madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "objc2-core-audio",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+      "path_in_vcs": "framework-crates/objc2-core-audio",
+      "files": [
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "upstream_path": "LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+        },
+        {
+          "path": "spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+          "upstream_path": "text/MIT.txt",
+          "kind": "standard-license-text",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-audio/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-audio/Cargo.toml",
+          "upstream_path": "framework-crates/objc2-core-audio/Cargo.toml",
+          "sha256": "1dd0a17c13f74c07539e9b3a583484b90189fa2e401571c4f8cc0fdd4ee3e837",
+          "source_sha256": "be0e8c7f5c53a57f2fcfe86a833d48d10e523e54a3ae865e2d559d67209d06ae",
+          "extracted_lines": [
+            [
+              4,
+              14
+            ]
+          ]
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml.txt",
+          "upstream_path": "Cargo.toml",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+          "source_sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+          "sha256": "4a4c3921aa69f5eb8e90ce36fe7984f89eb85d3dc50bf6f4a55a9260869a86b0",
+          "extracted_lines": [
+            [
+              10,
+              29
+            ]
+          ],
+          "kind": "upstream-workspace-declaration"
+        }
+      ],
+      "provenance_kind": "standard-license-plus-upstream-declaration",
+      "selected_license": "MIT",
+      "documentation_url": "https://spdx.org/licenses/MIT.html"
+    },
+    {
+      "name": "objc2-core-audio-types",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+      "path_in_vcs": "framework-crates/objc2-core-audio-types",
+      "files": [
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "upstream_path": "LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+        },
+        {
+          "path": "spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+          "upstream_path": "text/MIT.txt",
+          "kind": "standard-license-text",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-audio-types/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-audio-types/Cargo.toml",
+          "upstream_path": "framework-crates/objc2-core-audio-types/Cargo.toml",
+          "sha256": "7d57d3219e9d6d982a80e169640b5af36797db628bd9c56d3ba457680c74ff00",
+          "source_sha256": "475492b74df479e45b8c6a46f35b6cc12e05158334703cb135759ae44db94f48",
+          "extracted_lines": [
+            [
+              4,
+              14
+            ]
+          ]
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml.txt",
+          "upstream_path": "Cargo.toml",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+          "source_sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+          "sha256": "4a4c3921aa69f5eb8e90ce36fe7984f89eb85d3dc50bf6f4a55a9260869a86b0",
+          "extracted_lines": [
+            [
+              10,
+              29
+            ]
+          ],
+          "kind": "upstream-workspace-declaration"
+        }
+      ],
+      "provenance_kind": "standard-license-plus-upstream-declaration",
+      "selected_license": "MIT",
+      "documentation_url": "https://spdx.org/licenses/MIT.html"
+    },
+    {
+      "name": "objc2-core-data",
+      "version": "0.2.2",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "e282618be4c3a3b9542957e0c8540e9588472ce8",
+      "path_in_vcs": "framework-crates/objc2-core-data",
+      "files": [
+        {
+          "path": "madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "objc2-core-foundation",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+      "path_in_vcs": "framework-crates/objc2-core-foundation",
+      "files": [
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "upstream_path": "LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+        },
+        {
+          "path": "spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+          "upstream_path": "text/MIT.txt",
+          "kind": "standard-license-text",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-foundation/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-foundation/Cargo.toml",
+          "upstream_path": "framework-crates/objc2-core-foundation/Cargo.toml",
+          "sha256": "c8211e9f44d4a760206dab793819b0ebc8f60036267c1d0ba1907680b7048754",
+          "source_sha256": "44cd6a4440c3ea1ba85df240ab9b9e7a95da3a5873ce623ac426ac5acfbe507f",
+          "extracted_lines": [
+            [
+              4,
+              14
+            ]
+          ]
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml.txt",
+          "upstream_path": "Cargo.toml",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+          "source_sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+          "sha256": "4a4c3921aa69f5eb8e90ce36fe7984f89eb85d3dc50bf6f4a55a9260869a86b0",
+          "extracted_lines": [
+            [
+              10,
+              29
+            ]
+          ],
+          "kind": "upstream-workspace-declaration"
+        }
+      ],
+      "provenance_kind": "standard-license-plus-upstream-declaration",
+      "selected_license": "MIT",
+      "documentation_url": "https://spdx.org/licenses/MIT.html"
+    },
+    {
+      "name": "objc2-core-graphics",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+      "path_in_vcs": "framework-crates/objc2-core-graphics",
+      "files": [
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "upstream_path": "LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+        },
+        {
+          "path": "spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+          "upstream_path": "text/MIT.txt",
+          "kind": "standard-license-text",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-graphics/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-graphics/Cargo.toml",
+          "upstream_path": "framework-crates/objc2-core-graphics/Cargo.toml",
+          "sha256": "18555d8be3313d2f0d8d1662beba0f32a4e96d9a51a1b1f4a45e6d11ebc1fc7a",
+          "source_sha256": "8156455095991b7501f4fa30bdf29c5a541a41e3c479558e757932b07d0b16d1",
+          "extracted_lines": [
+            [
+              4,
+              14
+            ]
+          ]
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml.txt",
+          "upstream_path": "Cargo.toml",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+          "source_sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+          "sha256": "4a4c3921aa69f5eb8e90ce36fe7984f89eb85d3dc50bf6f4a55a9260869a86b0",
+          "extracted_lines": [
+            [
+              10,
+              29
+            ]
+          ],
+          "kind": "upstream-workspace-declaration"
+        }
+      ],
+      "provenance_kind": "standard-license-plus-upstream-declaration",
+      "selected_license": "MIT",
+      "documentation_url": "https://spdx.org/licenses/MIT.html"
+    },
+    {
+      "name": "objc2-core-image",
+      "version": "0.2.2",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "e282618be4c3a3b9542957e0c8540e9588472ce8",
+      "path_in_vcs": "framework-crates/objc2-core-image",
+      "files": [
+        {
+          "path": "madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "objc2-core-location",
+      "version": "0.2.2",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "e282618be4c3a3b9542957e0c8540e9588472ce8",
+      "path_in_vcs": "framework-crates/objc2-core-location",
+      "files": [
+        {
+          "path": "madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "objc2-encode",
+      "version": "4.1.0",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "8d214f5477365ffcbcbb7de058c86ed9a518efb7",
+      "path_in_vcs": "crates/objc2-encode",
+      "files": [
+        {
+          "path": "madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md",
+          "upstream_path": "LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+        },
+        {
+          "path": "spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+          "upstream_path": "text/MIT.txt",
+          "kind": "standard-license-text",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+        },
+        {
+          "path": "madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/crates/objc2-encode/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/crates/objc2-encode/Cargo.toml",
+          "upstream_path": "crates/objc2-encode/Cargo.toml",
+          "sha256": "4c4931b97f134137656b6901300e024a8e00a07b6bfa42f1dc8bffa58a89c869",
+          "source_sha256": "12972b1faf213492f9e78226f23642c461284b739f7be5437d9401465a2869a6",
+          "extracted_lines": [
+            [
+              1,
+              19
+            ]
+          ]
+        },
+        {
+          "path": "madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/Cargo.toml.txt",
+          "upstream_path": "Cargo.toml",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/Cargo.toml",
+          "source_sha256": "e87a02110f5eb621bfb789dded153094461049de1d62d0a0bd6e5f8ea87e13e9",
+          "sha256": "e20211c26a42631ee68f714b5450515208a56267cb0b7380e2eb19bd726f0c0d",
+          "extracted_lines": [
+            [
+              9,
+              28
+            ]
+          ],
+          "kind": "upstream-workspace-declaration"
+        }
+      ],
+      "provenance_kind": "standard-license-plus-upstream-declaration",
+      "selected_license": "MIT",
+      "documentation_url": "https://spdx.org/licenses/MIT.html"
+    },
+    {
+      "name": "objc2-io-surface",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+      "path_in_vcs": "framework-crates/objc2-io-surface",
+      "files": [
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "upstream_path": "LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+        },
+        {
+          "path": "spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+          "upstream_path": "text/MIT.txt",
+          "kind": "standard-license-text",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-io-surface/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-io-surface/Cargo.toml",
+          "upstream_path": "framework-crates/objc2-io-surface/Cargo.toml",
+          "sha256": "85c2b38ebfee7415596b7d59fcc9de975572cb119b5855d41033ca023ba25ad8",
+          "source_sha256": "80c0f7bac2add855807e6abadbc220473b982041b99339bacf17e2885b3752c9",
+          "extracted_lines": [
+            [
+              4,
+              14
+            ]
+          ]
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml.txt",
+          "upstream_path": "Cargo.toml",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+          "source_sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+          "sha256": "4a4c3921aa69f5eb8e90ce36fe7984f89eb85d3dc50bf6f4a55a9260869a86b0",
+          "extracted_lines": [
+            [
+              10,
+              29
+            ]
+          ],
+          "kind": "upstream-workspace-declaration"
+        }
+      ],
+      "provenance_kind": "standard-license-plus-upstream-declaration",
+      "selected_license": "MIT",
+      "documentation_url": "https://spdx.org/licenses/MIT.html"
+    },
+    {
+      "name": "objc2-link-presentation",
+      "version": "0.2.2",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "e282618be4c3a3b9542957e0c8540e9588472ce8",
+      "path_in_vcs": "framework-crates/objc2-link-presentation",
+      "files": [
+        {
+          "path": "madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "objc2-metal",
+      "version": "0.2.2",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "e282618be4c3a3b9542957e0c8540e9588472ce8",
+      "path_in_vcs": "framework-crates/objc2-metal",
+      "files": [
+        {
+          "path": "madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "objc2-quartz-core",
+      "version": "0.2.2",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "e282618be4c3a3b9542957e0c8540e9588472ce8",
+      "path_in_vcs": "framework-crates/objc2-quartz-core",
+      "files": [
+        {
+          "path": "madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "objc2-quartz-core",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+      "path_in_vcs": "framework-crates/objc2-quartz-core",
+      "files": [
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "upstream_path": "LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+        },
+        {
+          "path": "spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+          "upstream_path": "text/MIT.txt",
+          "kind": "standard-license-text",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-quartz-core/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-quartz-core/Cargo.toml",
+          "upstream_path": "framework-crates/objc2-quartz-core/Cargo.toml",
+          "sha256": "2cba424a6390c8ded3e04e59c3f4fffc8f9e5cb5cde69fa1ef27f48cf1f31434",
+          "source_sha256": "ca303efdd2bcb7958d3e0a08f9b7adb327a2942d0730cda5991365c48016f4d4",
+          "extracted_lines": [
+            [
+              4,
+              14
+            ]
+          ]
+        },
+        {
+          "path": "madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml.txt",
+          "upstream_path": "Cargo.toml",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+          "source_sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+          "sha256": "4a4c3921aa69f5eb8e90ce36fe7984f89eb85d3dc50bf6f4a55a9260869a86b0",
+          "extracted_lines": [
+            [
+              10,
+              29
+            ]
+          ],
+          "kind": "upstream-workspace-declaration"
+        }
+      ],
+      "provenance_kind": "standard-license-plus-upstream-declaration",
+      "selected_license": "MIT",
+      "documentation_url": "https://spdx.org/licenses/MIT.html"
+    },
+    {
+      "name": "objc2-symbols",
+      "version": "0.2.2",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "e282618be4c3a3b9542957e0c8540e9588472ce8",
+      "path_in_vcs": "framework-crates/objc2-symbols",
+      "files": [
+        {
+          "path": "madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "objc2-ui-kit",
+      "version": "0.2.2",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "e282618be4c3a3b9542957e0c8540e9588472ce8",
+      "path_in_vcs": "framework-crates/objc2-ui-kit",
+      "files": [
+        {
+          "path": "madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "objc2-uniform-type-identifiers",
+      "version": "0.2.2",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "e282618be4c3a3b9542957e0c8540e9588472ce8",
+      "path_in_vcs": "framework-crates/objc2-uniform-type-identifiers",
+      "files": [
+        {
+          "path": "madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "objc2-user-notifications",
+      "version": "0.2.2",
+      "license": "MIT",
+      "repository": "https://github.com/madsmtm/objc2",
+      "commit": "e282618be4c3a3b9542957e0c8540e9588472ce8",
+      "path_in_vcs": "framework-crates/objc2-user-notifications",
+      "files": [
+        {
+          "path": "madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt.txt",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+          "upstream_path": "LICENSE.txt",
+          "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "r-efi",
+      "version": "5.3.0",
+      "license": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
+      "repository": "https://github.com/r-efi/r-efi",
+      "commit": "97b55bed1c2c91dcbf787674849f05337ff80b33",
+      "path_in_vcs": "",
+      "files": [
+        {
+          "path": "r-efi/r-efi/97b55bed1c2c91dcbf787674849f05337ff80b33/AUTHORS.txt",
+          "source_url": "https://raw.githubusercontent.com/r-efi/r-efi/97b55bed1c2c91dcbf787674849f05337ff80b33/AUTHORS",
+          "upstream_path": "AUTHORS",
+          "sha256": "ff92bed461f50338dd703a9ba9aee496a425957873df1d91192776e4bdf5dda7"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "r-efi",
+      "version": "6.0.0",
+      "license": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
+      "repository": "https://github.com/r-efi/r-efi",
+      "commit": "7e1b0322d31d625f81a5656096330934f9cd835d",
+      "path_in_vcs": "",
+      "files": [
+        {
+          "path": "r-efi/r-efi/7e1b0322d31d625f81a5656096330934f9cd835d/AUTHORS.txt",
+          "source_url": "https://raw.githubusercontent.com/r-efi/r-efi/7e1b0322d31d625f81a5656096330934f9cd835d/AUTHORS",
+          "upstream_path": "AUTHORS",
+          "sha256": "d027e91dbc9cdbb2f1190068e498bd6b61cff022b6a032b191021ba658d96111"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "valuable",
+      "version": "0.1.1",
+      "license": "MIT",
+      "repository": "https://github.com/tokio-rs/valuable",
+      "commit": "9efc29b6e58cef28f6566a47aa7e142a55fead77",
+      "path_in_vcs": "valuable",
+      "files": [
+        {
+          "path": "tokio-rs/valuable/9efc29b6e58cef28f6566a47aa7e142a55fead77/LICENSE.txt",
+          "source_url": "https://raw.githubusercontent.com/tokio-rs/valuable/9efc29b6e58cef28f6566a47aa7e142a55fead77/LICENSE",
+          "upstream_path": "LICENSE",
+          "sha256": "ed60d479b8fd1f64e9cbc3de449a16a53ac1b3d1b6aeb9bf9d190a8e93061b44"
+        }
+      ],
+      "provenance_kind": "published-vcs-commit",
+      "selected_license": "MIT"
+    },
+    {
+      "name": "winapi-i686-pc-windows-gnu",
+      "version": "0.4.0",
+      "license": "MIT/Apache-2.0",
+      "selected_license": "MIT",
+      "repository": "https://github.com/retep998/winapi-rs",
+      "commit": "9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa",
+      "path_in_vcs": "i686",
+      "provenance_kind": "published-files-matched-to-upstream-commit",
+      "files": [
+        {
+          "path": "retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/LICENSE-MIT.txt",
+          "source_url": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/LICENSE-MIT",
+          "upstream_path": "LICENSE-MIT",
+          "sha256": "5b19674a1db628a475850a131956ed49521b744e3dda8f5a94141f9aba681219"
+        },
+        {
+          "path": "retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/LICENSE-APACHE.txt",
+          "source_url": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/LICENSE-APACHE",
+          "upstream_path": "LICENSE-APACHE",
+          "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
+        },
+        {
+          "path": "retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/i686/src/lib.rs.txt",
+          "source_url": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/i686/src/lib.rs",
+          "upstream_path": "i686/src/lib.rs",
+          "sha256": "9b0a59b4c5af60f46f79d2adbe433e07189d076972b8d33e9abca077dc10ccf7",
+          "source_sha256": "79212a91f610f8a77aa6ed4cc77212c2531eeb35630388bf07323cc328fcca42",
+          "extracted_lines": [
+            [
+              1,
+              6
+            ]
+          ]
+        },
+        {
+          "path": "retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/i686/build.rs.txt",
+          "source_url": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/i686/build.rs",
+          "upstream_path": "i686/build.rs",
+          "sha256": "72f9dd4f441e55dbd746f776e04290d076584f469e9d0c964b152bf909029ad3",
+          "source_sha256": "4344ce95f51197e1377429cd9ef7a8e3f97d39546776705857991f2f9416f545",
+          "extracted_lines": [
+            [
+              1,
+              6
+            ]
+          ]
+        },
+        {
+          "path": "retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/i686/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/i686/Cargo.toml",
+          "upstream_path": "i686/Cargo.toml",
+          "sha256": "5257d6f5283ab052b6af51f578a8c74e14c31deb53a7c6cd9e6fa16135d57eb3",
+          "source_sha256": "5257d6f5283ab052b6af51f578a8c74e14c31deb53a7c6cd9e6fa16135d57eb3",
+          "extracted_lines": [
+            [
+              1,
+              10
+            ]
+          ]
+        }
+      ],
+      "matched_published_files": 1389
+    },
+    {
+      "name": "winapi-x86_64-pc-windows-gnu",
+      "version": "0.4.0",
+      "license": "MIT/Apache-2.0",
+      "selected_license": "MIT",
+      "repository": "https://github.com/retep998/winapi-rs",
+      "commit": "9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa",
+      "path_in_vcs": "x86_64",
+      "provenance_kind": "published-files-matched-to-upstream-commit",
+      "files": [
+        {
+          "path": "retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/LICENSE-MIT.txt",
+          "source_url": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/LICENSE-MIT",
+          "upstream_path": "LICENSE-MIT",
+          "sha256": "5b19674a1db628a475850a131956ed49521b744e3dda8f5a94141f9aba681219"
+        },
+        {
+          "path": "retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/LICENSE-APACHE.txt",
+          "source_url": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/LICENSE-APACHE",
+          "upstream_path": "LICENSE-APACHE",
+          "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
+        },
+        {
+          "path": "retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/x86_64/src/lib.rs.txt",
+          "source_url": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/x86_64/src/lib.rs",
+          "upstream_path": "x86_64/src/lib.rs",
+          "sha256": "9b0a59b4c5af60f46f79d2adbe433e07189d076972b8d33e9abca077dc10ccf7",
+          "source_sha256": "79212a91f610f8a77aa6ed4cc77212c2531eeb35630388bf07323cc328fcca42",
+          "extracted_lines": [
+            [
+              1,
+              6
+            ]
+          ]
+        },
+        {
+          "path": "retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/x86_64/build.rs.txt",
+          "source_url": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/x86_64/build.rs",
+          "upstream_path": "x86_64/build.rs",
+          "sha256": "72f9dd4f441e55dbd746f776e04290d076584f469e9d0c964b152bf909029ad3",
+          "source_sha256": "b4ab421e1dc98159dd4440813cdaf7d9ea98278324bc6118d0f7cf378933f371",
+          "extracted_lines": [
+            [
+              1,
+              6
+            ]
+          ]
+        },
+        {
+          "path": "retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/x86_64/Cargo.toml.txt",
+          "source_url": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/x86_64/Cargo.toml",
+          "upstream_path": "x86_64/Cargo.toml",
+          "sha256": "d158846cdb1259d606bfbeb050e386484cb18f14db41478568114eddb76ec43e",
+          "source_sha256": "d158846cdb1259d606bfbeb050e386484cb18f14db41478568114eddb76ec43e",
+          "extracted_lines": [
+            [
+              1,
+              10
+            ]
+          ]
+        }
+      ],
+      "matched_published_files": 1418
+    }
+  ],
+  "provenance_notes": [
+    "Every package entry records the licence declaration of the exact resolved package; selected_license identifies the offered licence used for this cache when alternatives are available.",
+    "Files retain original full licence texts or exact line excerpts of upstream declarations/source notices. extracted_lines is a one-based inclusive range; source_sha256 authenticates the entire upstream file before extraction.",
+    "The SPDX MIT template is the published standard text, with literal copyright placeholders retained. It is accompanied by the upstream licence declaration and actual authors or copyright notice; no copyright year or ownership is inferred from author metadata.",
+    "For packages without published VCS metadata, commit identifies the upstream revision matched against all published non-Cargo source files and Cargo.toml.orig, rather than a claimed .cargo_vcs_info revision."
+  ]
+}

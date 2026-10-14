@@ -1,0 +1,11 @@
+[package]
+name = "objc2-audio-toolbox"
+version.workspace = true
+description = "Bindings to the AudioToolbox framework"
+edition.workspace = true
+rust-version.workspace = true
+keywords = ["cocoa", "apple", "framework", "macos", "ios"]
+categories.workspace = true
+repository.workspace = true
+license.workspace = true
+

@@ -1,0 +1,12 @@
+[package]
+name = "dispatch2"
+version = "0.3.1" # Remember to update html_root_url in lib.rs
+description = "Bindings and wrappers for Apple's Grand Central Dispatch (GCD)"
+edition.workspace = true
+rust-version.workspace = true
+keywords = ["gcd", "macos", "ios", "dispatch", "libdispatch"]
+categories.workspace = true
+repository.workspace = true
+license.workspace = true
+authors = ["Mads Marquart <mads@marquart.dk>", "Mary <mary@mary.zone>"]
+

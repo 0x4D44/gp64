@@ -1,0 +1,19 @@
+[package]
+name = "block2"
+version = "0.6.2" # Remember to update html_root_url in lib.rs
+description = "Apple's C language extension of blocks"
+keywords = ["objective-c", "macos", "ios", "blocks"]
+categories = [
+    "api-bindings",
+    "development-tools::ffi",
+    "os::macos-apis",
+    "external-ffi-bindings",
+]
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+# https://github.com/madsmtm/objc2/issues/23
+# All future contributions are licensed under "Zlib OR Apache-2.0 OR MIT".
+license = "MIT"
+

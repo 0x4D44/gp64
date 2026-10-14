@@ -1,0 +1,19 @@
+[package]
+name = "objc2-encode"
+version = "4.1.0" # Remember to update html_root_url in lib.rs
+description = "Objective-C type-encoding representation and parsing"
+keywords = ["objective-c", "macos", "ios", "encode"]
+categories = [
+    "development-tools::ffi",
+    "encoding",
+    "no-std",
+    "os::macos-apis",
+]
+# https://github.com/madsmtm/objc2/issues/23
+# All future contributions are licensed under "Zlib OR Apache-2.0 OR MIT".
+license = "MIT"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
