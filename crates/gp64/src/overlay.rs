@@ -3,12 +3,10 @@
 //! recording. The menu model knows nothing about windows or threads: keys
 //! go in, [`Action`]s come out, and the frontend applies them. The REC
 //! indicator is drawn the same way.
-use crate::discovery::Peer;
 use crate::scaler::Scaler;
 use gp64::recording::clock;
 use gp64_hw::vga::CP437_FONT_8X16;
 use gp64_machine::modem::LineStatus;
-use std::net::IpAddr;
 use winit::keyboard::KeyCode;
 
 const GLYPH_W: usize = 8;
@@ -23,19 +21,8 @@ const PITCH_COMPACT: usize = 1;
 /// Width of the label column, in glyphs, including the selection marker.
 const LABEL_COLS: usize = 13;
 const HINT: &str = "F12 close  arrows move  enter select";
-const MODEM_HINT: &str = "esc/left back  arrows move  enter";
-const PEERS_HINT: &str = "up/down choose  enter join  esc back";
-const PEERS_EMPTY_HINT: &str = "esc/left back  searching";
-/// The hint while a value is being typed.
-const EDIT_HINT: &str = "type  enter start  esc cancel";
-/// Longest typed value: a full DNS name and a port.
-const EDIT_MAX: usize = 261;
 /// Widest line in glyphs: the hint, or a label with the longest value.
 const BLOCK_COLS: usize = 36;
-/// Maximum discovered peers accepted by the menu, matching discovery's cap.
-const PEER_LIMIT: usize = 64;
-/// Maximum peer rows shown at once.
-const PEER_PAGE_SIZE: usize = 5;
 const WHITE: u32 = 0x00ff_ffff;
 const YELLOW: u32 = 0x00ff_d700;
 const GREY: u32 = 0x00a0_a0a0;
@@ -52,43 +39,25 @@ const DIM: u32 = 154;
 /// The CP437 right-pointing triangle marks the selected row.
 const MARKER: u8 = 0x10;
 
-/// Rows in the main menu, in order.
+/// The menu's rows, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
     Scaler,
     Fullscreen,
     Mute,
     Recording,
-    /// Opens the modem setup submenu.
+    /// The COM1 null-modem link on or off.
+    Serial,
+    /// The COM2 modem link on or off.
     Modem,
-    /// Opens the discovered LAN host list.
-    LanHosts,
-    /// The phone line's status; nothing to change.
-    Line,
-    /// The modem's COM port: this run's, and the saved one for the next.
-    Com,
-    /// Listen for a caller on a TCP port.
-    Host,
-    /// Dial a `host:port`.
-    Join,
-    /// A dynamically listed discovered host.
-    Peer,
-    /// Read-only peer search/error/missing status.
-    PeerStatus,
 }
-pub const ITEMS: [Item; 5] = [
+pub const ITEMS: [Item; 6] = [
     Item::Scaler,
     Item::Fullscreen,
     Item::Mute,
     Item::Recording,
+    Item::Serial,
     Item::Modem,
-];
-const MODEM_ITEMS: [Item; 5] = [
-    Item::Line,
-    Item::Com,
-    Item::Host,
-    Item::Join,
-    Item::LanHosts,
 ];
 impl Item {
     fn label(self) -> &'static str {
@@ -97,15 +66,27 @@ impl Item {
             Item::Fullscreen => "FULLSCREEN:",
             Item::Mute => "MUTE:",
             Item::Recording => "RECORDING:",
+            Item::Serial => "SERIAL:",
             Item::Modem => "MODEM:",
-            Item::LanHosts => "LAN HOSTS:",
-            Item::Line => "LINE:",
-            Item::Com => "COM PORT:",
-            Item::Host => "HOST PORT:",
-            Item::Join => "JOIN:",
-            Item::Peer => "HOST:",
-            Item::PeerStatus => "STATUS:",
         }
+    }
+}
+
+/// A LAN link as the menu shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Link {
+    pub enabled: bool,
+    pub status: LineStatus,
+    /// The connected peer's advertised name, when discovery knows it.
+    pub peer: Option<String>,
+}
+impl Link {
+    /// A call is up or being placed: the peer would notice a pause.
+    fn in_use(&self) -> bool {
+        matches!(
+            self.status,
+            LineStatus::Connecting(_) | LineStatus::Connected(_)
+        )
     }
 }
 
@@ -119,26 +100,14 @@ pub struct Values {
     pub mute_locked: bool,
     /// Emulated milliseconds into the active recording, if any.
     pub recording: Option<u64>,
-    /// The modem's phone line.
-    pub modem: LineStatus,
-    /// The modem's COM port for this run (1 or 2).
-    pub com: u8,
-    /// The saved COM port the next launch uses.
-    pub next_com: u8,
-    /// The port HOST PORT listens on.
-    pub host_port: u16,
-    /// The `host:port` JOIN dials; empty until one is typed.
-    pub join: String,
-    /// Hosts found by LAN discovery.
-    pub peers: Vec<Peer>,
-    /// Latest non-fatal LAN discovery error, if any.
-    pub discovery_error: Option<String>,
+    pub serial: Link,
+    pub modem: Link,
 }
 impl Values {
-    /// The guest is held still while the menu is open, unless a phone line
-    /// is up or coming up: the peer would lose carrier.
+    /// The guest is held still while the menu is open, unless a link is in
+    /// use: the peer would lose the connection.
     pub fn pauses(&self) -> bool {
-        !self.modem.is_active()
+        !self.serial.in_use() && !self.modem.in_use()
     }
 }
 
@@ -150,9 +119,6 @@ pub enum Key {
     Right,
     Select,
     Close,
-    /// A typed character, for the HOST PORT and JOIN values.
-    Char(char),
-    Backspace,
 }
 impl Key {
     /// Menu meaning of a physical key; F12 is handled as a hotkey instead.
@@ -164,54 +130,8 @@ impl Key {
             KeyCode::ArrowRight | KeyCode::Numpad6 => Key::Right,
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => Key::Select,
             KeyCode::Escape => Key::Close,
-            KeyCode::Backspace => Key::Backspace,
             _ => return None,
         })
-    }
-}
-
-/// Menu keys for one key press. `text` is what the press types. While a
-/// value is being typed, typed characters win (numpad digits and Space
-/// type rather than move or select); otherwise menu keys win.
-pub fn keys(code: KeyCode, text: Option<&str>, editing: bool) -> Vec<Key> {
-    let typed: Vec<Key> = text
-        .unwrap_or_default()
-        .chars()
-        .filter(|c| !c.is_control())
-        .map(Key::Char)
-        .collect();
-    if editing && !typed.is_empty() {
-        return typed;
-    }
-    match Key::from_code(code) {
-        Some(key) => vec![key],
-        None => typed,
-    }
-}
-
-/// A value being typed into a row.
-#[derive(Debug, PartialEq, Eq)]
-struct Edit {
-    item: Item,
-    text: String,
-    /// Why the last Enter was refused, shown in place of the text.
-    error: Option<&'static str>,
-}
-fn accepts(item: Item, c: char) -> bool {
-    match item {
-        Item::Host => c.is_ascii_digit(),
-        _ => c.is_ascii_alphanumeric() || ".-_:[]".contains(c),
-    }
-}
-/// The action a typed value starts, or why it cannot.
-fn commit(item: Item, text: &str) -> Result<Action, &'static str> {
-    match item {
-        Item::Host => crate::cli::parse_host_port(text)
-            .map(Action::Host)
-            .ok_or("PORT 1-65535"),
-        _ => crate::cli::parse_join(text)
-            .map(|address| Action::Join(address.to_owned()))
-            .ok_or("NEEDS HOST:PORT"),
     }
 }
 
@@ -224,64 +144,16 @@ pub enum Action {
     Mute(bool),
     /// Start (true) or stop (false) recording.
     Record(bool),
-    /// Save this COM port for the next launch.
-    Com(u8),
-    /// Listen on this TCP port.
-    Host(u16),
-    /// Dial this `host:port`.
-    Join(String),
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Page {
-    #[default]
-    Main,
-    Modem,
-    Peers,
-}
-impl Page {
-    fn fixed_items(self) -> Option<&'static [Item]> {
-        match self {
-            Self::Main => Some(&ITEMS),
-            Self::Modem => Some(&MODEM_ITEMS),
-            Self::Peers => None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PeerKey {
-    id: u64,
-    ip: IpAddr,
-}
-impl PeerKey {
-    fn of(peer: &Peer) -> Self {
-        Self {
-            id: peer.id,
-            ip: peer.address.ip(),
-        }
-    }
-    fn matches(&self, peer: &Peer) -> bool {
-        self.id == peer.id && self.ip == peer.address.ip()
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-enum PeerSelection {
-    #[default]
-    None,
-    Selected(PeerKey),
-    Missing(PeerKey),
+    /// Enable or disable the COM1 serial link.
+    Serial(bool),
+    /// Enable or disable the COM2 modem link.
+    Modem(bool),
 }
 
 #[derive(Default)]
 pub struct Menu {
     open: bool,
-    page: Page,
     selected: usize,
-    edit: Option<Edit>,
-    peers: Vec<Peer>,
-    peer_selection: PeerSelection,
 }
 impl Menu {
     pub fn is_open(&self) -> bool {
@@ -290,243 +162,27 @@ impl Menu {
     /// Opens on the first row, or closes. Returns the new state.
     pub fn toggle(&mut self) -> bool {
         self.open = !self.open;
-        self.page = Page::Main;
         self.selected = 0;
-        self.edit = None;
         self.open
     }
-
-    /// Replaces the latest discovery snapshot without changing a selected
-    /// host unless its identity has disappeared.
-    pub fn update_peers(&mut self, peers: &[Peer]) {
-        self.peers = peers.iter().take(PEER_LIMIT).cloned().collect();
-        let missing = match &self.peer_selection {
-            PeerSelection::Selected(key) if !self.peers.iter().any(|peer| key.matches(peer)) => {
-                Some(key.clone())
-            }
-            _ => None,
-        };
-        if let Some(key) = missing {
-            self.peer_selection = PeerSelection::Missing(key);
-        }
-        if self.page == Page::Peers
-            && self.peer_selection == PeerSelection::None
-            && !self.peers.is_empty()
-        {
-            self.peer_selection = PeerSelection::Selected(PeerKey::of(&self.peers[0]));
-        }
-    }
-
-    /// The key help under the rows.
-    fn hint(&self) -> &'static str {
-        if self.editing() {
-            EDIT_HINT
-        } else {
-            match self.page {
-                Page::Main => HINT,
-                Page::Modem => MODEM_HINT,
-                Page::Peers if self.peers.is_empty() => PEERS_EMPTY_HINT,
-                Page::Peers => PEERS_HINT,
-            }
-        }
-    }
-    /// A value is being typed: keys edit it rather than move.
-    pub fn editing(&self) -> bool {
-        self.edit.is_some()
-    }
     pub fn selected(&self) -> Item {
-        match self.page {
-            Page::Peers if self.selected_peer().is_some() => Item::Peer,
-            Page::Peers => Item::PeerStatus,
-            page => page.fixed_items().expect("fixed menu page")[self.selected],
-        }
+        ITEMS[self.selected]
     }
-    fn selected_peer(&self) -> Option<&Peer> {
-        let PeerSelection::Selected(key) = &self.peer_selection else {
-            return None;
-        };
-        self.peers.iter().find(|peer| key.matches(peer))
-    }
-    fn selected_peer_index(&self) -> Option<usize> {
-        let PeerSelection::Selected(key) = &self.peer_selection else {
-            return None;
-        };
-        self.peers.iter().position(|peer| key.matches(peer))
-    }
-    fn visible_peer_start(&self) -> usize {
-        self.selected_peer_index()
-            .map_or(0, |index| (index / PEER_PAGE_SIZE) * PEER_PAGE_SIZE)
-    }
-    fn visible_row_count(&self) -> usize {
-        if self.page != Page::Peers {
-            return self.page.fixed_items().expect("fixed menu page").len();
-        }
-        if self.peers.is_empty() {
-            1
-        } else {
-            self.peers
-                .len()
-                .saturating_sub(self.visible_peer_start())
-                .min(PEER_PAGE_SIZE)
-        }
-    }
-    fn enter_peers(&mut self) {
-        self.page = Page::Peers;
-        self.selected = 0;
-        if self.peer_selection == PeerSelection::None {
-            if let Some(peer) = self.peers.first() {
-                self.peer_selection = PeerSelection::Selected(PeerKey::of(peer));
-            }
-        }
-    }
-    /// Applies one key press. `Close` returns from the modem submenu or closes
-    /// the main menu.
+    /// Applies one key press. `Close` closes the menu.
     pub fn handle(&mut self, key: Key, values: &Values) -> Action {
         if !self.open {
             return Action::None;
         }
-        if let Some(edit) = &mut self.edit {
-            return match key {
-                Key::Char(c) if accepts(edit.item, c) && edit.text.len() < EDIT_MAX => {
-                    edit.text.push(c);
-                    edit.error = None;
-                    Action::None
-                }
-                Key::Backspace => {
-                    edit.text.pop();
-                    edit.error = None;
-                    Action::None
-                }
-                Key::Select => match commit(edit.item, &edit.text) {
-                    Ok(action) => {
-                        self.edit = None;
-                        action
-                    }
-                    Err(error) => {
-                        edit.error = Some(error);
-                        Action::None
-                    }
-                },
-                // Esc cancels the typing, not the menu.
-                Key::Close => {
-                    self.edit = None;
-                    Action::None
-                }
-                _ => Action::None,
-            };
-        }
-        if self.page == Page::Peers {
-            return self.handle_peer_keys(key, values);
-        }
-        let item = self.selected();
-        if self.page == Page::Main && item == Item::Modem && matches!(key, Key::Select | Key::Right)
-        {
-            self.page = Page::Modem;
-            self.selected = 0;
-            return Action::None;
-        }
-        if self.page == Page::Modem
-            && item == Item::LanHosts
-            && matches!(key, Key::Select | Key::Right)
-        {
-            self.enter_peers();
-            return Action::None;
-        }
-        if matches!(item, Item::Host | Item::Join) {
-            if values.modem.is_active() {
-                return match key {
-                    Key::Up | Key::Down | Key::Left | Key::Close => {
-                        self.handle_row_keys(key, values)
-                    }
-                    _ => Action::None,
-                };
-            }
-            let shown = match item {
-                Item::Host => values.host_port.to_string(),
-                _ => values.join.clone(),
-            };
-            let mut begin = |text: String| {
-                self.edit = Some(Edit {
-                    item,
-                    text,
-                    error: None,
-                });
-                Action::None
-            };
-            match key {
-                // Enter starts the shown value, or asks for one if none is usable.
-                Key::Select => {
-                    return commit(item, &shown).unwrap_or_else(|_| begin(String::new()));
-                }
-                Key::Backspace => {
-                    let mut text = shown;
-                    text.pop();
-                    return begin(text);
-                }
-                Key::Char(c) if accepts(item, c) => return begin(c.to_string()),
-                Key::Left => return self.handle_row_keys(key, values),
-                Key::Right | Key::Char(_) => return Action::None,
-                _ => {}
-            }
-        }
-        self.handle_row_keys(key, values)
-    }
-    fn handle_peer_keys(&mut self, key: Key, values: &Values) -> Action {
-        match key {
-            Key::Up => self.move_peer_selection(false),
-            Key::Down => self.move_peer_selection(true),
-            Key::Left | Key::Close => {
-                self.page = Page::Modem;
-                self.selected = MODEM_ITEMS
-                    .iter()
-                    .position(|item| *item == Item::LanHosts)
-                    .expect("LAN HOSTS row");
-            }
-            Key::Select if !values.modem.is_active() => {
-                return self
-                    .selected_peer()
-                    .map_or(Action::None, |peer| Action::Join(peer.address.to_string()));
-            }
-            Key::Select | Key::Right | Key::Char(_) | Key::Backspace => return Action::None,
-        }
-        Action::None
-    }
-    fn move_peer_selection(&mut self, forward: bool) {
-        if self.peers.is_empty() {
-            return;
-        }
-        let next = match self.selected_peer_index() {
-            Some(index) if forward => (index + 1) % self.peers.len(),
-            Some(index) => (index + self.peers.len() - 1) % self.peers.len(),
-            None if forward => 0,
-            None => self.peers.len() - 1,
-        };
-        self.peer_selection = PeerSelection::Selected(PeerKey::of(&self.peers[next]));
-    }
-    fn handle_row_keys(&mut self, key: Key, values: &Values) -> Action {
-        let items = self.page.fixed_items().expect("fixed menu page");
         let action = match key {
             Key::Up => {
-                let count = items.len();
-                self.selected = (self.selected + count - 1) % count;
+                self.selected = (self.selected + ITEMS.len() - 1) % ITEMS.len();
                 Action::None
             }
             Key::Down => {
-                self.selected = (self.selected + 1) % items.len();
-                Action::None
-            }
-            Key::Close if self.page == Page::Modem => {
-                self.page = Page::Main;
-                self.selected = ITEMS.len() - 1;
+                self.selected = (self.selected + 1) % ITEMS.len();
                 Action::None
             }
             Key::Close => Action::Close,
-            Key::Char(_) | Key::Backspace => Action::None,
-            Key::Left if self.page == Page::Modem => {
-                self.page = Page::Main;
-                self.selected = ITEMS.len() - 1;
-                Action::None
-            }
             Key::Left => self.step(false, values),
             Key::Right => self.step(true, values),
             Key::Select => match self.selected() {
@@ -536,9 +192,7 @@ impl Menu {
         };
         if action == Action::Close {
             self.open = false;
-            self.page = Page::Main;
             self.selected = 0;
-            self.edit = None;
         }
         action
     }
@@ -548,15 +202,9 @@ impl Menu {
             Item::Fullscreen => Action::Fullscreen(!values.fullscreen),
             Item::Mute if values.mute_locked => Action::None,
             Item::Mute => Action::Mute(!values.mute),
-            Item::Com => Action::Com(if values.next_com == 1 { 2 } else { 1 }),
-            Item::Recording
-            | Item::Modem
-            | Item::LanHosts
-            | Item::Line
-            | Item::Host
-            | Item::Join
-            | Item::Peer
-            | Item::PeerStatus => Action::None,
+            Item::Serial => Action::Serial(!values.serial.enabled),
+            Item::Modem => Action::Modem(!values.modem.enabled),
+            Item::Recording => Action::None,
         }
     }
     /// Dims the frame and draws the menu over it; does nothing when closed.
@@ -566,7 +214,7 @@ impl Menu {
         }
         let buffer = &mut buffer[..width * height];
         dim(buffer);
-        let layout = layout(width, height, self.visible_row_count());
+        let layout = layout(width, height, ITEMS.len());
         let mut canvas = Canvas {
             buffer,
             width,
@@ -575,103 +223,31 @@ impl Menu {
         };
         let line = GLYPH_H * layout.scale;
         let mut y = layout.y;
-        let title = self.title(values);
+        let title = if values.pauses() {
+            "gp64  PAUSED"
+        } else {
+            "gp64  RUNNING (LINK IN USE)"
+        };
         canvas.text(layout.x, y, title.as_bytes(), WHITE);
         y += 2 * line;
-        match self.page {
-            Page::Peers => {
-                self.render_peers(&mut canvas, layout.x, y, line, layout.pitch, values);
-                y += self.visible_row_count() * layout.pitch * line;
-            }
-            page => {
-                for (index, &item) in page
-                    .fixed_items()
-                    .expect("fixed menu page")
-                    .iter()
-                    .enumerate()
-                {
-                    let selected = index == self.selected;
-                    let value = self
-                        .edit
-                        .as_ref()
-                        .filter(|edit| edit.item == item)
-                        .map_or_else(|| value_text(item, values), edit_text);
-                    let locked = match item {
-                        Item::Mute => values.mute_locked,
-                        Item::Host | Item::Join => values.modem.is_active(),
-                        _ => false,
-                    };
-                    draw_row(&mut canvas, layout.x, y, item, &value, selected, locked);
-                    y += layout.pitch * line;
-                }
-            }
+        for (index, &item) in ITEMS.iter().enumerate() {
+            let locked = item == Item::Mute && values.mute_locked;
+            let value = value_text(item, values);
+            draw_row(
+                &mut canvas,
+                layout.x,
+                y,
+                item,
+                &value,
+                index == self.selected,
+                locked,
+            );
+            y += layout.pitch * line;
         }
         // One blank row after the last item, then the hint.
         let hint = y + 2 * line - layout.pitch * line;
-        canvas.text(layout.x, hint, self.hint().as_bytes(), GREY);
+        canvas.text(layout.x, hint, HINT.as_bytes(), GREY);
     }
-    fn title(&self, values: &Values) -> String {
-        match self.page {
-            Page::Main if values.pauses() => "gp64  PAUSED".into(),
-            Page::Main => "gp64  RUNNING (MODEM IN USE)".into(),
-            Page::Modem => "gp64  MODEM SETUP".into(),
-            Page::Peers if matches!(&self.peer_selection, PeerSelection::Missing(_)) => {
-                "gp64  HOST LOST - PICK AGAIN".into()
-            }
-            Page::Peers if self.peers.is_empty() && values.discovery_error.is_some() => {
-                "gp64  DISCOVERY ERROR".into()
-            }
-            Page::Peers if self.peers.is_empty() => "gp64  SEARCHING LAN HOSTS".into(),
-            Page::Peers if self.selected_peer().is_none() => "gp64  PICK A LAN HOST".into(),
-            Page::Peers => {
-                let page = self.visible_peer_start() / PEER_PAGE_SIZE + 1;
-                let pages = self.peers.len().div_ceil(PEER_PAGE_SIZE);
-                format!("gp64  LAN HOSTS {page}/{pages}")
-            }
-        }
-    }
-    fn render_peers(
-        &self,
-        canvas: &mut Canvas<'_>,
-        x: usize,
-        mut y: usize,
-        line: usize,
-        pitch: usize,
-        values: &Values,
-    ) {
-        if self.peers.is_empty() {
-            let value = peer_status_text(self, values);
-            draw_row(canvas, x, y, Item::PeerStatus, &value, true, true);
-            return;
-        }
-        let start = self.visible_peer_start();
-        let end = (start + PEER_PAGE_SIZE).min(self.peers.len());
-        for index in start..end {
-            let peer = &self.peers[index];
-            let selected = self.selected_peer_index() == Some(index);
-            draw_row(
-                canvas,
-                x,
-                y,
-                Item::Peer,
-                &peer_text(peer),
-                selected,
-                values.modem.is_active(),
-            );
-            y += pitch * line;
-        }
-    }
-}
-
-/// A value being typed, with a cursor; its tail when it is too long, or
-/// the reason Enter refused it.
-fn edit_text(edit: &Edit) -> String {
-    if let Some(error) = edit.error {
-        return error.into();
-    }
-    let text = format!("{}_", edit.text.to_ascii_uppercase());
-    let skip = text.len().saturating_sub(VALUE_COLS);
-    text[skip..].into()
 }
 
 fn draw_row(
@@ -711,52 +287,6 @@ fn ascii_uppercase(value: &str, limit: usize) -> String {
         .collect()
 }
 
-fn error_value(error: &str) -> String {
-    ascii_uppercase(&format!("ERROR: {error}"), VALUE_COLS)
-}
-
-fn peer_status_text(menu: &Menu, values: &Values) -> String {
-    if matches!(&menu.peer_selection, PeerSelection::Missing(_)) {
-        "HOST REMOVED".into()
-    } else if let Some(error) = &values.discovery_error {
-        error_value(error)
-    } else {
-        "SEARCHING...".into()
-    }
-}
-
-fn peer_address_text(peer: &Peer) -> String {
-    let full = peer.address.to_string();
-    if full.len() <= VALUE_COLS {
-        return full;
-    }
-    let ip = peer.address.ip().to_string();
-    let suffix = format!("]:{}", peer.address.port());
-    let ip_budget = VALUE_COLS - suffix.len() - 2;
-    let leading = ip_budget.div_ceil(2);
-    let trailing = ip_budget - leading;
-    format!(
-        "[{}~{}{}",
-        &ip[..leading],
-        &ip[ip.len() - trailing..],
-        suffix
-    )
-}
-
-fn peer_text(peer: &Peer) -> String {
-    let address = peer_address_text(peer);
-    let name_room = VALUE_COLS.saturating_sub(address.len() + 1);
-    if name_room == 0 {
-        return address;
-    }
-    let name = ascii_uppercase(peer.name.trim(), name_room);
-    if name.is_empty() {
-        address
-    } else {
-        format!("{address} {name}")
-    }
-}
-
 fn value_text(item: Item, values: &Values) -> String {
     let on = |on: bool| if on { "ON" } else { "OFF" };
     match item {
@@ -767,60 +297,30 @@ fn value_text(item: Item, values: &Values) -> String {
         Item::Recording => values
             .recording
             .map_or_else(|| "OFF".into(), |ms| format!("ON {}", clock(ms))),
-        Item::Modem => "SETUP".into(),
-        Item::LanHosts => {
-            if let Some(error) = &values.discovery_error {
-                error_value(error)
-            } else if values.peers.is_empty() {
-                "SEARCHING...".into()
-            } else if values.peers.len() == 1 {
-                "1 HOST".into()
-            } else {
-                format!("{} HOSTS", values.peers.len().min(PEER_LIMIT))
-            }
-        }
-        Item::Line => line_text(&values.modem),
-        Item::Com if values.next_com != values.com => {
-            format!("COM{} (COM{} NEXT RUN)", values.com, values.next_com)
-        }
-        Item::Com => format!("COM{}", values.com),
-        Item::Host => values.host_port.to_string(),
-        Item::Join if values.join.is_empty() => "TYPE HOST:PORT".into(),
-        Item::Join => {
-            let text = values.join.to_ascii_uppercase();
-            let skip = text.len().saturating_sub(VALUE_COLS);
-            text[skip..].into()
-        }
-        Item::Peer | Item::PeerStatus => String::new(),
+        Item::Serial => link_text(&values.serial),
+        Item::Modem => link_text(&values.modem),
     }
 }
 
 /// Glyphs available for a row's value.
 const VALUE_COLS: usize = BLOCK_COLS - LABEL_COLS;
-/// The line status in one row: the full sentence when it fits, else its
-/// leading words.
-fn line_text(status: &LineStatus) -> String {
-    let full = status.to_string().to_ascii_uppercase();
-    if full.len() <= VALUE_COLS {
-        return full;
+/// OFF, or ON and what the link is doing, in one row.
+fn link_text(link: &Link) -> String {
+    if !link.enabled {
+        return "OFF".into();
     }
-    let short = match status {
-        LineStatus::Connected(peer) => {
-            // The peer's port is ephemeral; its address is what matters.
-            let host = peer
-                .rsplit_once(':')
-                .map_or(peer.as_str(), |(host, _)| host);
-            let text = format!("CONNECTED {host}");
-            if text.len() <= VALUE_COLS {
-                return text;
-            }
-            "CONNECTED".into()
-        }
-        // The address being dialled is on its own row.
+    let state = match &link.status {
+        LineStatus::Off | LineStatus::Listening(_) => "SEARCHING".into(),
         LineStatus::Connecting(_) => "CONNECTING".into(),
-        _ => full,
+        // The peer's port is ephemeral; its name or address is what matters.
+        LineStatus::Connected(peer) => link.peer.clone().unwrap_or_else(|| {
+            peer.rsplit_once(':')
+                .map_or(peer.as_str(), |(host, _)| host)
+                .to_owned()
+        }),
+        LineStatus::Failed(reason) => format!("FAILED: {reason}"),
     };
-    short.chars().take(VALUE_COLS).collect()
+    ascii_uppercase(&format!("ON - {state}"), VALUE_COLS)
 }
 
 /// Draws a pulsing red dot and `REC mm:ss` in the top-right corner while
@@ -969,13 +469,8 @@ mod tests {
             mute: false,
             mute_locked: false,
             recording: None,
-            modem: LineStatus::Off,
-            com: 2,
-            next_com: 2,
-            host_port: 23456,
-            join: String::new(),
-            peers: Vec::new(),
-            discovery_error: None,
+            serial: Link::default(),
+            modem: Link::default(),
         }
     }
     fn open() -> Menu {
@@ -984,34 +479,16 @@ mod tests {
         menu
     }
     fn select(menu: &mut Menu, item: Item) {
-        assert!(
-            menu.page
-                .fixed_items()
-                .is_some_and(|items| items.contains(&item)),
-            "{item:?} is not visible"
-        );
         while menu.selected() != item {
             menu.handle(Key::Down, &values());
         }
     }
-    fn open_modem() -> Menu {
-        let mut menu = open();
-        select(&mut menu, Item::Modem);
-        assert_eq!(menu.handle(Key::Select, &values()), Action::None);
-        assert_eq!(menu.selected(), Item::Line);
-        menu
-    }
-    fn peer(id: u64, name: &str, address: &str) -> Peer {
-        Peer {
-            id,
-            name: name.into(),
-            address: address.parse().expect("valid peer address"),
+    fn link(enabled: bool, status: LineStatus) -> Link {
+        Link {
+            enabled,
+            status,
+            peer: None,
         }
-    }
-    fn modem_peers(menu: &mut Menu, peers: &[Peer]) {
-        menu.update_peers(peers);
-        select(menu, Item::LanHosts);
-        assert_eq!(menu.handle(Key::Select, &values()), Action::None);
     }
     /// Window sizes from tiny to large, in both orientations.
     const WINDOWS: &[(usize, usize)] = &[
@@ -1045,28 +522,6 @@ mod tests {
     }
 
     #[test]
-    fn modem_submenu_opens_and_escape_or_left_returns_to_modem() {
-        let mut menu = open();
-        select(&mut menu, Item::Modem);
-        assert_eq!(menu.handle(Key::Select, &values()), Action::None);
-        assert_ne!(menu.selected(), Item::Modem);
-        assert_eq!(menu.handle(Key::Close, &values()), Action::None);
-        assert!(menu.is_open());
-        assert_eq!(menu.selected(), Item::Modem);
-
-        assert_eq!(menu.handle(Key::Right, &values()), Action::None);
-        assert_ne!(menu.selected(), Item::Modem);
-        assert_eq!(menu.handle(Key::Left, &values()), Action::None);
-        assert!(menu.is_open());
-        assert_eq!(menu.selected(), Item::Modem);
-
-        assert_eq!(menu.handle(Key::Select, &values()), Action::None);
-        assert!(!menu.toggle());
-        assert!(menu.toggle());
-        assert_eq!(menu.selected(), Item::Scaler);
-    }
-
-    #[test]
     fn up_and_down_wrap() {
         let mut menu = open();
         assert_eq!(menu.handle(Key::Up, &values()), Action::None);
@@ -1077,20 +532,10 @@ mod tests {
             menu.handle(Key::Down, &values());
             assert_eq!(menu.selected(), item);
         }
-
-        let mut menu = open_modem();
-        assert_eq!(menu.handle(Key::Up, &values()), Action::None);
-        assert_eq!(menu.selected(), Item::LanHosts);
-        assert_eq!(menu.handle(Key::Down, &values()), Action::None);
-        assert_eq!(menu.selected(), Item::Line);
-        for item in MODEM_ITEMS.into_iter().skip(1) {
-            menu.handle(Key::Down, &values());
-            assert_eq!(menu.selected(), item);
-        }
     }
 
     #[test]
-    fn main_value_rows_cycle_both_ways_and_emit_actions() {
+    fn value_rows_cycle_both_ways_and_emit_actions() {
         let mut menu = open();
         let v = values();
         assert_eq!(menu.handle(Key::Right, &v), Action::Scaler(Scaler::Smooth));
@@ -1101,6 +546,24 @@ mod tests {
         select(&mut menu, Item::Mute);
         assert_eq!(menu.handle(Key::Left, &v), Action::Mute(true));
         // Value rows never close the menu.
+        assert!(menu.is_open());
+    }
+
+    #[test]
+    fn link_rows_switch_their_link_on_and_off() {
+        let mut menu = open();
+        let off = values();
+        let on = Values {
+            serial: link(true, LineStatus::Listening(1)),
+            modem: link(true, LineStatus::Listening(2)),
+            ..values()
+        };
+        select(&mut menu, Item::Serial);
+        assert_eq!(menu.handle(Key::Select, &off), Action::Serial(true));
+        assert_eq!(menu.handle(Key::Left, &on), Action::Serial(false));
+        select(&mut menu, Item::Modem);
+        assert_eq!(menu.handle(Key::Right, &off), Action::Modem(true));
+        assert_eq!(menu.handle(Key::Select, &on), Action::Modem(false));
         assert!(menu.is_open());
     }
 
@@ -1117,41 +580,13 @@ mod tests {
     }
 
     #[test]
-    fn escape_closes_the_main_menu_and_f12_resets_the_submenu() {
+    fn escape_closes_the_menu() {
         let mut menu = open();
+        select(&mut menu, Item::Modem);
         assert_eq!(menu.handle(Key::Close, &values()), Action::Close);
-        assert!(!menu.is_open());
-        assert_eq!(menu.selected(), Item::Scaler);
-
-        let mut menu = open_modem();
-        assert!(!menu.toggle());
         assert!(!menu.is_open());
         assert!(menu.toggle());
         assert_eq!(menu.selected(), Item::Scaler);
-    }
-
-    #[test]
-    fn main_and_modem_submenu_rows_are_grouped() {
-        assert_eq!(
-            ITEMS,
-            [
-                Item::Scaler,
-                Item::Fullscreen,
-                Item::Mute,
-                Item::Recording,
-                Item::Modem,
-            ]
-        );
-        assert_eq!(
-            MODEM_ITEMS,
-            [
-                Item::Line,
-                Item::Com,
-                Item::Host,
-                Item::Join,
-                Item::LanHosts,
-            ]
-        );
     }
 
     #[test]
@@ -1165,28 +600,102 @@ mod tests {
 
     #[test]
     fn every_line_fits_the_block_width() {
+        let connected = |peer: &str| Link {
+            enabled: true,
+            status: LineStatus::Connected("[2001:db8::1234:5678:9abc:def0]:23456".into()),
+            peer: (!peer.is_empty()).then(|| peer.to_owned()),
+        };
         let v = Values {
             mute_locked: true,
             recording: Some(999 * 60_000 + 59_999),
+            serial: connected("a-very-long-workstation-name-indeed"),
+            modem: connected(""),
             ..values()
         };
-        assert!(HINT.len() <= BLOCK_COLS && MODEM_HINT.len() <= BLOCK_COLS);
-        assert!(PEERS_HINT.len() <= BLOCK_COLS && PEERS_EMPTY_HINT.len() <= BLOCK_COLS);
-        assert!(EDIT_HINT.len() <= BLOCK_COLS);
-        assert!("gp64  RUNNING (MODEM IN USE)".len() <= BLOCK_COLS);
-        assert!("gp64  MODEM SETUP".len() <= BLOCK_COLS);
-        for item in ITEMS.into_iter().chain(MODEM_ITEMS) {
+        assert!(HINT.len() <= BLOCK_COLS);
+        assert!("gp64  RUNNING (LINK IN USE)".len() <= BLOCK_COLS);
+        for item in ITEMS {
             assert!(item.label().len() + 2 <= LABEL_COLS, "{item:?}");
             assert!(
                 LABEL_COLS + value_text(item, &v).len() <= BLOCK_COLS,
                 "{item:?}"
             );
         }
+        let failed = link(true, LineStatus::Failed("x".repeat(40)));
+        assert!(link_text(&failed).len() <= VALUE_COLS);
+    }
+
+    #[test]
+    fn link_rows_show_off_or_what_the_link_is_doing() {
+        assert_eq!(link_text(&link(false, LineStatus::Off)), "OFF");
+        // A hang-up still in progress already reads as off.
+        assert_eq!(
+            link_text(&link(false, LineStatus::Connected("10.0.0.2:4000".into()))),
+            "OFF"
+        );
+        assert_eq!(link_text(&link(true, LineStatus::Off)), "ON - SEARCHING");
+        assert_eq!(
+            link_text(&link(true, LineStatus::Listening(4000))),
+            "ON - SEARCHING"
+        );
+        assert_eq!(
+            link_text(&link(true, LineStatus::Connecting("10.0.0.2:4000".into()))),
+            "ON - CONNECTING"
+        );
+        assert_eq!(
+            link_text(&link(true, LineStatus::Connected("10.0.0.2:4000".into()))),
+            "ON - 10.0.0.2"
+        );
+        let named = Link {
+            peer: Some("desk".into()),
+            ..link(true, LineStatus::Connected("10.0.0.2:4000".into()))
+        };
+        assert_eq!(link_text(&named), "ON - DESK");
+        assert_eq!(
+            link_text(&link(true, LineStatus::Failed("refused".into()))),
+            "ON - FAILED: REFUSED"
+        );
+    }
+
+    #[test]
+    fn the_menu_pauses_only_while_no_link_is_in_use() {
+        for (status, pauses) in [
+            (LineStatus::Off, true),
+            (LineStatus::Failed("refused".into()), true),
+            (LineStatus::Listening(1), true),
+            (LineStatus::Connecting("h:1".into()), false),
+            (LineStatus::Connected("10.0.0.2:4000".into()), false),
+        ] {
+            let serial = Values {
+                serial: link(true, status.clone()),
+                ..values()
+            };
+            let modem = Values {
+                modem: link(true, status.clone()),
+                ..values()
+            };
+            assert_eq!(serial.pauses(), pauses, "serial {status:?}");
+            assert_eq!(modem.pauses(), pauses, "modem {status:?}");
+        }
+    }
+
+    #[test]
+    fn title_shows_whether_the_guest_is_paused() {
+        let (width, height) = (960, 720);
+        let mut paused = vec![0; width * height];
+        let mut running = vec![0; width * height];
+        open().render(&mut paused, width, height, &values());
+        let v = Values {
+            modem: link(true, LineStatus::Connected("10.0.0.2:4000".into())),
+            ..values()
+        };
+        open().render(&mut running, width, height, &v);
+        assert_ne!(paused, running);
     }
 
     #[test]
     fn menu_never_overflows_the_window() {
-        for rows in [1, 2, PEER_PAGE_SIZE, ITEMS.len(), MODEM_ITEMS.len()] {
+        for rows in [1, 2, ITEMS.len()] {
             for &(width, height) in WINDOWS {
                 let layout = layout(width, height, rows);
                 assert!((1..=SCALE_MAX).contains(&layout.scale));
@@ -1208,25 +717,16 @@ mod tests {
     }
 
     #[test]
-    fn each_page_layout_uses_its_visible_row_count() {
+    fn layout_scales_with_the_window() {
         assert_eq!(layout(320, 200, ITEMS.len()).scale, 1);
-        // At 640x400 the main menu gains a larger compact scale.
+        // At 640x400 the menu gains a larger compact scale.
         assert_eq!(
             layout(640, 400, ITEMS.len()),
             layout_of(2, PITCH_COMPACT, 640, 400, ITEMS.len())
         );
-        // The shorter main menu fits at scale 3 with roomy spacing.
-        assert_eq!(
-            layout(960, 720, ITEMS.len()),
-            layout_of(3, PITCH_ROOMY, 960, 720, ITEMS.len())
-        );
         assert_eq!(
             layout(1920, 1080, ITEMS.len()),
             layout_of(4, PITCH_ROOMY, 1920, 1080, ITEMS.len())
-        );
-        assert_eq!(
-            layout(1920, 1080, MODEM_ITEMS.len()),
-            layout_of(4, PITCH_ROOMY, 1920, 1080, MODEM_ITEMS.len())
         );
         assert_eq!(layout(3840, 2160, ITEMS.len()).scale, SCALE_MAX);
         // Narrow and tall: width decides.
@@ -1249,29 +749,16 @@ mod tests {
 
     #[test]
     fn render_draws_inside_the_buffer_at_every_size() {
-        let main = open();
-        let modem = open_modem();
-        let mut peers = open_modem();
-        let found = [
-            peer(1, "desk", "10.0.0.1:23519"),
-            peer(2, "laptop", "10.0.0.2:23519"),
-            peer(3, "arcade", "10.0.0.3:23519"),
-            peer(4, "server", "10.0.0.4:23519"),
-            peer(5, "other", "10.0.0.5:23519"),
-            peer(6, "sixth", "10.0.0.6:23519"),
-        ];
-        modem_peers(&mut peers, &found);
+        let menu = open();
         for &(width, height) in WINDOWS {
             // A guard word after the buffer catches any write past the end.
-            for menu in [&main, &modem, &peers] {
-                let mut buffer = vec![0x0080_8080; width * height + 1];
-                menu.render(&mut buffer[..width * height], width, height, &values());
-                assert_eq!(buffer[width * height], 0x0080_8080, "{width}x{height}");
-                if width >= 320 && height >= 200 {
-                    assert!(buffer.contains(&YELLOW), "{width}x{height}");
-                    assert!(buffer.contains(&WHITE), "{width}x{height}");
-                    assert!(buffer.contains(&BLACK), "{width}x{height}");
-                }
+            let mut buffer = vec![0x0080_8080; width * height + 1];
+            menu.render(&mut buffer[..width * height], width, height, &values());
+            assert_eq!(buffer[width * height], 0x0080_8080, "{width}x{height}");
+            if width >= 320 && height >= 200 {
+                assert!(buffer.contains(&YELLOW), "{width}x{height}");
+                assert!(buffer.contains(&WHITE), "{width}x{height}");
+                assert!(buffer.contains(&BLACK), "{width}x{height}");
             }
         }
         // A buffer shorter than the window is left alone.
@@ -1336,163 +823,6 @@ mod tests {
         assert!(menu.is_open());
     }
 
-    #[test]
-    fn modem_submenu_shows_its_back_hint_and_title() {
-        let menu = open_modem();
-        assert_eq!(menu.hint(), MODEM_HINT);
-        let (width, height) = (960, 720);
-        let mut buffer = vec![0; width * height];
-        menu.render(&mut buffer, width, height, &values());
-        assert_ne!(buffer, {
-            let mut main = vec![0; width * height];
-            open().render(&mut main, width, height, &values());
-            main
-        });
-    }
-
-    #[test]
-    fn lan_hosts_value_reports_searching_count_and_discovery_error() {
-        assert_eq!(value_text(Item::LanHosts, &values()), "SEARCHING...");
-        let with_hosts = Values {
-            peers: vec![peer(1, "desk", "10.0.0.1:23519")],
-            ..values()
-        };
-        assert_eq!(value_text(Item::LanHosts, &with_hosts), "1 HOST");
-        let with_two_hosts = Values {
-            peers: vec![
-                peer(1, "desk", "10.0.0.1:23519"),
-                peer(2, "laptop", "10.0.0.2:23519"),
-            ],
-            ..values()
-        };
-        assert_eq!(value_text(Item::LanHosts, &with_two_hosts), "2 HOSTS");
-        let failed = Values {
-            discovery_error: Some("socket unavailable".into()),
-            ..values()
-        };
-        assert_eq!(
-            value_text(Item::LanHosts, &failed),
-            "ERROR: SOCKET UNAVAILAB"
-        );
-    }
-
-    #[test]
-    fn empty_peer_page_is_read_only_and_returns_to_lan_hosts() {
-        let mut menu = open_modem();
-        select(&mut menu, Item::LanHosts);
-        assert_eq!(menu.handle(Key::Select, &values()), Action::None);
-        assert_eq!(menu.selected(), Item::PeerStatus);
-        assert_eq!(menu.hint(), PEERS_EMPTY_HINT);
-        assert_eq!(menu.handle(Key::Select, &values()), Action::None);
-
-        menu.update_peers(&[peer(3, "arcade", "10.0.0.3:23519")]);
-        assert_eq!(menu.selected(), Item::Peer);
-        assert_eq!(
-            menu.handle(Key::Select, &values()),
-            Action::Join("10.0.0.3:23519".into())
-        );
-
-        assert_eq!(menu.handle(Key::Left, &values()), Action::None);
-        assert_eq!(menu.selected(), Item::LanHosts);
-        assert_eq!(menu.handle(Key::Right, &values()), Action::None);
-        assert_eq!(menu.selected(), Item::Peer);
-        assert_eq!(menu.handle(Key::Close, &values()), Action::None);
-        assert_eq!(menu.selected(), Item::LanHosts);
-
-        assert_eq!(menu.handle(Key::Right, &values()), Action::None);
-        assert_eq!(menu.selected(), Item::Peer);
-        assert!(!menu.toggle());
-        assert!(menu.toggle());
-        assert_eq!(menu.selected(), Item::Scaler);
-    }
-
-    #[test]
-    fn peer_selection_tracks_identity_across_reorder_and_uses_latest_port() {
-        let desk = peer(1, "desk", "10.0.0.1:23519");
-        let laptop = peer(2, "laptop", "10.0.0.2:23519");
-        let mut menu = open_modem();
-        modem_peers(&mut menu, &[desk.clone(), laptop]);
-        assert_eq!(menu.selected_peer().map(|peer| peer.id), Some(desk.id));
-
-        let moved_desk = peer(1, "desk", "10.0.0.1:30000");
-        let reordered_laptop = peer(2, "laptop", "10.0.0.2:23519");
-        menu.update_peers(&[reordered_laptop, moved_desk]);
-        assert_eq!(menu.selected_peer().map(|peer| peer.id), Some(desk.id));
-        assert_eq!(
-            menu.handle(Key::Select, &values()),
-            Action::Join("10.0.0.1:30000".into())
-        );
-    }
-
-    #[test]
-    fn removed_peer_cannot_dial_a_replacement_until_explicitly_moved() {
-        let desk = peer(1, "desk", "10.0.0.1:23519");
-        let laptop = peer(2, "laptop", "10.0.0.2:23519");
-        let mut menu = open_modem();
-        modem_peers(&mut menu, &[desk.clone(), laptop]);
-        menu.handle(Key::Down, &values());
-        menu.update_peers(std::slice::from_ref(&desk));
-
-        assert_eq!(menu.selected(), Item::PeerStatus);
-        assert_eq!(menu.handle(Key::Select, &values()), Action::None);
-        menu.update_peers(&[desk.clone(), peer(2, "laptop", "10.0.0.2:23519")]);
-        assert_eq!(menu.selected(), Item::PeerStatus);
-        assert_eq!(menu.handle(Key::Select, &values()), Action::None);
-        assert_eq!(menu.handle(Key::Down, &values()), Action::None);
-        assert_eq!(menu.selected_peer().map(|peer| peer.id), Some(desk.id));
-        assert_eq!(
-            menu.handle(Key::Select, &values()),
-            Action::Join("10.0.0.1:23519".into())
-        );
-    }
-
-    #[test]
-    fn peer_picker_paginates_five_rows_and_renders_inside_every_window() {
-        let peers: Vec<_> = (1..=12)
-            .map(|id| peer(id, "host", &format!("10.0.0.{}:23519", id)))
-            .collect();
-        let mut menu = open_modem();
-        modem_peers(&mut menu, &peers);
-        for _ in 0..5 {
-            menu.handle(Key::Down, &values());
-        }
-        assert_eq!(menu.selected_peer_index(), Some(5));
-        assert_eq!(menu.visible_peer_start(), 5);
-        assert_eq!(menu.visible_row_count(), PEER_PAGE_SIZE);
-        for _ in 0..6 {
-            menu.handle(Key::Down, &values());
-        }
-        assert_eq!(menu.selected_peer_index(), Some(11));
-        assert_eq!(menu.visible_peer_start(), 10);
-        assert_eq!(menu.visible_row_count(), 2);
-
-        for &(width, height) in WINDOWS {
-            let mut buffer = vec![0x0080_8080; width * height + 1];
-            menu.render(&mut buffer[..width * height], width, height, &values());
-            assert_eq!(buffer[width * height], 0x0080_8080, "{width}x{height}");
-            if width >= 320 && height >= 200 {
-                assert!(buffer.contains(&YELLOW), "{width}x{height}");
-                assert!(buffer.contains(&WHITE), "{width}x{height}");
-            }
-        }
-    }
-
-    #[test]
-    fn peer_join_uses_exact_address_and_is_blocked_while_modem_is_busy() {
-        let target = peer(7, "arcade", "192.168.1.23:54321");
-        let mut menu = open_modem();
-        modem_peers(&mut menu, &[target]);
-        let busy = Values {
-            modem: LineStatus::Listening(23456),
-            ..values()
-        };
-        assert_eq!(menu.handle(Key::Select, &busy), Action::None);
-        assert_eq!(
-            menu.handle(Key::Select, &values()),
-            Action::Join("192.168.1.23:54321".into())
-        );
-    }
-
     fn is_red(pixel: u32) -> bool {
         pixel & 0xffff == 0 && (pixel >> 16) >= REC_DIM
     }
@@ -1554,265 +884,5 @@ mod tests {
         assert_eq!(draw(0), REC_BRIGHT << 16);
         assert_eq!(draw(500), REC_DIM << 16);
         assert_eq!(draw(1000), draw(0));
-    }
-
-    #[test]
-    fn title_shows_whether_the_guest_is_paused() {
-        let (width, height) = (960, 720);
-        let mut paused = vec![0; width * height];
-        let mut running = vec![0; width * height];
-        open().render(&mut paused, width, height, &values());
-        let v = Values {
-            modem: LineStatus::Listening(23456),
-            ..values()
-        };
-        open().render(&mut running, width, height, &v);
-        assert_ne!(paused, running);
-    }
-
-    #[test]
-    fn the_menu_pauses_only_while_no_line_is_up() {
-        for (status, pauses) in [
-            (LineStatus::Off, true),
-            (LineStatus::Failed("refused".into()), true),
-            (LineStatus::Listening(1), false),
-            (LineStatus::Connecting("h:1".into()), false),
-            (LineStatus::Connected("10.0.0.2:4000".into()), false),
-        ] {
-            let v = Values {
-                modem: status.clone(),
-                ..values()
-            };
-            assert_eq!(v.pauses(), pauses, "{status:?}");
-        }
-    }
-
-    #[test]
-    fn line_row_shows_the_line_status() {
-        let text = |status| {
-            value_text(
-                Item::Line,
-                &Values {
-                    modem: status,
-                    ..values()
-                },
-            )
-        };
-        assert_eq!(text(LineStatus::Off), "OFF");
-        assert_eq!(text(LineStatus::Listening(23456)), "LISTENING ON :23456");
-        assert_eq!(
-            text(LineStatus::Connected("10.0.0.2:4000".into())),
-            "CONNECTED 10.0.0.2"
-        );
-        assert_eq!(
-            text(LineStatus::Connected("192.168.100.200:65535".into())),
-            "CONNECTED"
-        );
-        assert_eq!(
-            text(LineStatus::Connecting("example.org:23".into())),
-            "CONNECTING"
-        );
-        assert_eq!(
-            text(LineStatus::Connecting("h:1".into())),
-            "CONNECTING TO H:1"
-        );
-        assert_eq!(
-            text(LineStatus::Failed("refused".into())),
-            "FAILED: REFUSED"
-        );
-        for status in [
-            LineStatus::Connecting("a-very-long-host-name.example:23456".into()),
-            LineStatus::Connected("[2001:db8::1234:5678]:23456".into()),
-            LineStatus::Failed("x".repeat(40)),
-        ] {
-            assert!(text(status).len() <= VALUE_COLS);
-        }
-    }
-
-    #[test]
-    fn line_row_is_read_only_and_modem_entry_is_available() {
-        let mut menu = open_modem();
-        assert_eq!(menu.selected(), Item::Line);
-        assert_eq!(menu.handle(Key::Select, &values()), Action::None);
-        assert_eq!(menu.handle(Key::Right, &values()), Action::None);
-        assert_eq!(menu.selected(), Item::Line);
-        assert_eq!(menu.handle(Key::Down, &values()), Action::None);
-        assert_eq!(menu.selected(), Item::Com);
-        assert_eq!(menu.handle(Key::Left, &values()), Action::None);
-        assert!(menu.is_open());
-        assert_eq!(menu.selected(), Item::Modem);
-        assert_eq!(menu.handle(Key::Select, &values()), Action::None);
-        assert_eq!(menu.selected(), Item::Line);
-    }
-
-    fn press(menu: &mut Menu, keys: &str, v: &Values) {
-        for c in keys.chars() {
-            assert_eq!(menu.handle(Key::Char(c), v), Action::None);
-        }
-    }
-    fn editing_text(menu: &Menu) -> Option<String> {
-        menu.edit.as_ref().map(edit_text)
-    }
-
-    #[test]
-    fn typed_keys_edit_and_menu_keys_move() {
-        use KeyCode::*;
-        assert_eq!(keys(Numpad8, Some("8"), false), [Key::Up]);
-        assert_eq!(keys(Numpad8, Some("8"), true), [Key::Char('8')]);
-        assert_eq!(keys(Space, Some(" "), false), [Key::Select]);
-        assert_eq!(keys(Space, Some(" "), true), [Key::Char(' ')]);
-        assert_eq!(keys(KeyA, Some("a"), false), [Key::Char('a')]);
-        assert_eq!(keys(Backspace, Some("\u{8}"), true), [Key::Backspace]);
-        assert_eq!(keys(Enter, Some("\r"), true), [Key::Select]);
-        assert_eq!(keys(Escape, Some("\u{1b}"), true), [Key::Close]);
-        assert_eq!(keys(ArrowUp, None, true), [Key::Up]);
-        assert_eq!(keys(F1, None, false), []);
-    }
-
-    #[test]
-    fn host_row_starts_the_shown_port_or_a_typed_one() {
-        let v = values();
-        let mut menu = open_modem();
-        select(&mut menu, Item::Host);
-        assert_eq!(menu.handle(Key::Select, &v), Action::Host(23456));
-        assert!(menu.is_open() && !menu.editing());
-        // Typing replaces the port; letters are refused.
-        press(&mut menu, "4x0", &v);
-        assert_eq!(editing_text(&menu).as_deref(), Some("40_"));
-        menu.handle(Key::Backspace, &v);
-        press(&mut menu, "01", &v);
-        assert_eq!(menu.handle(Key::Select, &v), Action::Host(401));
-        assert!(!menu.editing());
-        // Backspace edits the shown port.
-        menu.handle(Key::Backspace, &v);
-        assert_eq!(editing_text(&menu).as_deref(), Some("2345_"));
-        // A bad port is refused inline and stays editable.
-        for _ in 0..4 {
-            menu.handle(Key::Backspace, &v);
-        }
-        press(&mut menu, "0", &v);
-        assert_eq!(menu.handle(Key::Select, &v), Action::None);
-        assert_eq!(editing_text(&menu).as_deref(), Some("PORT 1-65535"));
-        menu.handle(Key::Backspace, &v);
-        assert_eq!(editing_text(&menu).as_deref(), Some("_"));
-        press(&mut menu, "99999", &v);
-        assert_eq!(menu.handle(Key::Select, &v), Action::None);
-        // Esc cancels the typing only; arrows are ignored while typing.
-        assert_eq!(menu.handle(Key::Down, &v), Action::None);
-        assert_eq!(menu.handle(Key::Close, &v), Action::None);
-        assert!(menu.is_open() && !menu.editing());
-        assert_eq!(menu.selected(), Item::Host);
-        assert_eq!(menu.handle(Key::Close, &v), Action::None);
-        assert!(menu.is_open());
-        assert_eq!(menu.selected(), Item::Modem);
-    }
-
-    #[test]
-    fn join_row_asks_for_an_address_until_one_is_saved() {
-        let mut menu = open_modem();
-        select(&mut menu, Item::Join);
-        let empty = values();
-        assert_eq!(value_text(Item::Join, &empty), "TYPE HOST:PORT");
-        assert_eq!(menu.handle(Key::Select, &empty), Action::None);
-        assert!(menu.editing());
-        press(&mut menu, "peer", &empty);
-        assert_eq!(menu.handle(Key::Select, &empty), Action::None);
-        assert_eq!(editing_text(&menu).as_deref(), Some("NEEDS HOST:PORT"));
-        // Spaces and other characters a host name cannot hold are refused.
-        press(&mut menu, " :23/", &empty);
-        assert_eq!(editing_text(&menu).as_deref(), Some("PEER:23_"));
-        assert_eq!(
-            menu.handle(Key::Select, &empty),
-            Action::Join("peer:23".into())
-        );
-        let saved = Values {
-            join: "peer:23".into(),
-            ..values()
-        };
-        assert_eq!(value_text(Item::Join, &saved), "PEER:23");
-        assert_eq!(
-            menu.handle(Key::Select, &saved),
-            Action::Join("peer:23".into())
-        );
-        // A long address shows its tail.
-        let long = Values {
-            join: format!("{}.example:23456", "h".repeat(40)),
-            ..values()
-        };
-        let shown = value_text(Item::Join, &long);
-        assert!(shown.len() <= VALUE_COLS && shown.ends_with(".EXAMPLE:23456"));
-    }
-
-    #[test]
-    fn host_and_join_rest_while_a_line_is_up() {
-        let busy = Values {
-            modem: LineStatus::Connecting("peer:23".into()),
-            join: "peer:23".into(),
-            ..values()
-        };
-        let mut menu = open_modem();
-        select(&mut menu, Item::Host);
-        for key in [Key::Select, Key::Char('1'), Key::Backspace, Key::Right] {
-            assert_eq!(menu.handle(key, &busy), Action::None);
-            assert!(!menu.editing());
-        }
-        assert_eq!(menu.handle(Key::Down, &busy), Action::None);
-        assert_eq!(menu.selected(), Item::Join);
-        assert_eq!(menu.handle(Key::Select, &busy), Action::None);
-        assert_eq!(menu.handle(Key::Close, &busy), Action::None);
-        assert!(menu.is_open());
-        assert_eq!(menu.selected(), Item::Modem);
-        assert_eq!(menu.handle(Key::Select, &busy), Action::None);
-        for _ in 0..3 {
-            menu.handle(Key::Down, &busy);
-        }
-        assert_eq!(menu.selected(), Item::Join);
-        assert_eq!(menu.handle(Key::Left, &busy), Action::None);
-        assert_eq!(menu.selected(), Item::Modem);
-        // Closing the menu discards a value being typed.
-        let mut menu = open_modem();
-        select(&mut menu, Item::Host);
-        menu.handle(Key::Char('1'), &values());
-        menu.toggle();
-        menu.toggle();
-        assert!(!menu.editing());
-    }
-
-    #[test]
-    fn typing_shows_the_edit_hint() {
-        let (width, height) = (960, 720);
-        let draw = |menu: &Menu| {
-            let mut buffer = vec![0; width * height];
-            menu.render(&mut buffer, width, height, &values());
-            buffer
-        };
-        let mut menu = open_modem();
-        select(&mut menu, Item::Host);
-        assert_eq!(menu.hint(), MODEM_HINT);
-        let idle = draw(&menu);
-        menu.handle(Key::Backspace, &values());
-        assert_eq!(menu.hint(), EDIT_HINT);
-        assert_ne!(draw(&menu), idle);
-        menu.handle(Key::Close, &values());
-        assert_eq!(menu.hint(), MODEM_HINT);
-        menu.handle(Key::Close, &values());
-        assert_eq!(menu.hint(), HINT);
-    }
-
-    #[test]
-    fn com_row_saves_the_other_port_for_the_next_run() {
-        let mut menu = open_modem();
-        select(&mut menu, Item::Com);
-        assert_eq!(value_text(Item::Com, &values()), "COM2");
-        assert_eq!(menu.handle(Key::Right, &values()), Action::Com(1));
-        let changed = Values {
-            next_com: 1,
-            ..values()
-        };
-        assert_eq!(value_text(Item::Com, &changed), "COM2 (COM1 NEXT RUN)");
-        assert_eq!(menu.handle(Key::Select, &changed), Action::Com(2));
-        assert_eq!(menu.selected(), Item::Com);
-        assert_eq!(menu.handle(Key::Left, &changed), Action::None);
-        assert_eq!(menu.selected(), Item::Modem);
     }
 }

@@ -2,12 +2,13 @@
 
 Run Geoff Crammond's original Formula One Grand Prix (F1GP) on Windows 11 and macOS.
 Copy gp64 into your existing game folder and run it. The game starts as it
-did on a DOS PC, with its own graphics, sound, controls and modem play.
+did on a DOS PC, with its own graphics, sound, controls and two-player links.
 
 gp64 runs your own unmodified copy by emulation, not decompilation. Under the
 hood it is a cut-down DOS emulator in Rust: a real-mode PC, DOS and BIOS
 services, VGA video, keyboard and mouse, PC speaker and AdLib audio, and a
-serial modem over direct TCP. No DOS installation or ROM image is required.
+null-modem cable and a serial modem carried over TCP on the local network.
+No DOS installation or ROM image is required.
 
 This is a personal project with irregular maintenance. Contributions and pull
 requests are not accepted; forks are welcome under GPL-3.0-or-later. There is no
@@ -32,29 +33,30 @@ that folder is unavailable.
 ## Options and controls
 
 ```text
-gp64 [--mute] [--record FILE] [--host PORT | --join HOST:PORT]
-     [--com 1|2] [--wait] [program [args]]
+gp64 [--mute] [--record FILE] [--wait] [program [args]]
 ```
 
 - `--mute`: disable host audio output.
 - `--record FILE`: record video and audio to an MKV/WebM file, finalised on exit.
-- `--host PORT`: listen for a direct TCP modem connection.
-- `--join HOST:PORT`: connect to a TCP modem host; mutually exclusive with `--host`.
-- `--com 1|2`: choose the emulated modem port; default COM2.
 - `--wait`: on Windows, keep the prompt until gp64 exits and print its messages
   there. Without it, gp64 returns to the prompt once started and shows a
   failure in a message box.
 - `--help` and `--version`: print help or version.
 
-For multiplayer, start hosting from F12 → Modem → Host Port on one machine.
-On the other, open F12 → Modem → LAN Hosts and select that host, then use the
-program's serial-modem setup. Hosts advertise automatically on the local IPv4
-network. Discovery uses UDP ports 23517–23520; the modem uses the chosen TCP
-host port. Direct `--host 1234` and `--join hostname:1234` also work.
+For two players, run gp64 on two machines on the same local network, or twice
+on one machine. In each copy, turn on F12 → Serial for a null-modem cable on
+COM1, or F12 → Modem for a modem on COM2. The two copies find each other and
+connect by themselves; the menu row shows the other machine once connected.
+Then use the program's own serial-link or modem setup on that COM port.
 
-- F12 opens the host menu: scaler, fullscreen, mute, recording and a modem
-  setup submenu with line status, COM port, host port, LAN hosts and join address.
-  Enter opens modem setup; Escape goes back and F12 closes the menu.
+Both links are off by default, and gp64 opens no network sockets until one is
+turned on. A link then listens on a TCP port chosen by the system and
+advertises it with UDP broadcasts on ports 23517–23520, so the first use may
+raise a firewall prompt. The choices are saved for later runs.
+
+- F12 opens the host menu: scaler, fullscreen, mute, recording, serial and
+  modem. The menu pauses the program unless a link is connected. Escape or F12
+  closes it.
 - F11 cycles integer nearest-neighbour, smooth, area and CRT scaling, with 4:3 aspect correction.
 - Alt+Enter toggles fullscreen.
 - Click inside the window to capture the mouse; Ctrl+F10 releases it.

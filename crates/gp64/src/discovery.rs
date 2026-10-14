@@ -1,8 +1,8 @@
-//! Non-blocking IPv4 LAN discovery for gp64 modem hosts.
+//! Non-blocking IPv4 LAN discovery for gp64 serial and modem links.
 //!
-//! Discovery listens while the frontend is open and advertises only while a
-//! modem line is listening. The frontend calls [`Discovery::tick`] from its
-//! redraw loop; this module owns no threads.
+//! Discovery opens its socket only while a link is enabled, and then
+//! advertises the TCP ports its links listen on. The frontend calls
+//! [`Discovery::tick`] from its redraw loop; this module owns no threads.
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
@@ -17,21 +17,34 @@ const MAX_RECEIVES_PER_TICK: usize = 64;
 const MAX_PEERS: usize = 64;
 
 const MAGIC: &[u8; 4] = b"GP64";
-const PROTOCOL_VERSION: u16 = 1;
+const PROTOCOL_VERSION: u16 = 2;
 const SERVICE: &str = "gp64";
 const SERVICE_FIELD_SIZE: usize = 32;
 const NAME_FIELD_SIZE: usize = 32;
-const PACKET_SIZE: usize = 4 + 2 + 2 + SERVICE_FIELD_SIZE + NAME_FIELD_SIZE + 8;
+const PACKET_SIZE: usize = 4 + 2 + 4 + SERVICE_FIELD_SIZE + NAME_FIELD_SIZE + 8;
+/// Where the service field starts, after the magic, version and ports.
+const SERVICE_START: usize = 10;
+/// How long a failed bind waits before the next attempt.
+const BIND_RETRY: Duration = Duration::from_secs(2);
 
-/// A gp64 host found on the local network.
+/// The TCP ports a gp64 process listens on for each link; zero for none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Ports {
+    pub serial: u16,
+    pub modem: u16,
+}
+
+/// A gp64 process found on the local network.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Peer {
     /// Stable identifier for the remote gp64 process.
     pub id: u64,
     /// Generic hostname advertised by the remote process.
     pub name: String,
-    /// Address and TCP port to use when connecting to the modem host.
-    pub address: SocketAddr,
+    /// Address the remote process advertised from.
+    pub ip: IpAddr,
+    /// Its links waiting for a caller.
+    pub ports: Ports,
 }
 
 struct PeerEntry {
@@ -44,8 +57,10 @@ pub struct Discovery {
     socket: Option<UdpSocket>,
     instance_id: u64,
     display_name: String,
-    host_port: Option<u16>,
+    ports: Ports,
     last_advertisement: Option<Instant>,
+    /// When a failed bind may be tried again.
+    retry_bind: Option<Instant>,
     peers: Vec<PeerEntry>,
     error: Option<String>,
 }
@@ -58,69 +73,71 @@ impl Discovery {
             socket: None,
             instance_id: generate_instance_id(),
             display_name: local_display_name(),
-            host_port: None,
+            ports: Ports::default(),
             last_advertisement: None,
+            retry_bind: None,
             peers: Vec::new(),
             error: None,
         }
     }
 
-    /// Bind the first available UDP discovery port in 23517–23520.
-    ///
-    /// The socket is non-blocking and supports IPv4 broadcast. Calling this
-    /// more than once after a successful start is harmless.
-    pub fn start(&mut self) -> io::Result<()> {
-        if self.socket.is_some() {
-            return Ok(());
-        }
+    /// This process's identifier; the higher of two peers places the call.
+    pub fn instance_id(&self) -> u64 {
+        self.instance_id
+    }
 
+    /// Opens the socket on the first free UDP port in 23517–23520 while
+    /// `active`, retrying a failed bind every two seconds; closes it and
+    /// forgets peers otherwise. A failure is reported once on `stderr`.
+    pub fn set_active(&mut self, active: bool) {
+        if !active {
+            self.socket = None;
+            self.peers.clear();
+            self.error = None;
+            self.retry_bind = None;
+            return;
+        }
+        let now = Instant::now();
+        if self.socket.is_some() || self.retry_bind.is_some_and(|at| now < at) {
+            return;
+        }
         match bind_discovery_socket() {
             Ok(socket) => {
                 self.socket = Some(socket);
                 self.last_advertisement = None;
+                self.retry_bind = None;
                 self.error = None;
-                Ok(())
             }
             Err(error) => {
-                self.error = Some(error.to_string());
-                Err(error)
+                let error = error.to_string();
+                if self.error.as_ref() != Some(&error) {
+                    eprintln!("gp64: LAN discovery unavailable: {error}");
+                }
+                self.error = Some(error);
+                self.retry_bind = Some(now + BIND_RETRY);
             }
         }
     }
 
-    /// Advertise a listening modem port, or withdraw the current host.
-    ///
-    /// A zero port is never advertised as a joinable peer. If a host stops
-    /// listening, a withdrawal packet is sent immediately when discovery has
-    /// a socket; peers continue to be received while idle.
-    pub fn set_host(&mut self, port: Option<u16>) {
-        let port = port.filter(|port| *port != 0);
-        let previous = self.host_port;
-        if previous == port {
-            return;
-        }
-
-        self.host_port = port;
-        self.last_advertisement = None;
-
-        if previous.is_some() && port.is_none() {
-            self.send_advertisement(0);
+    /// The ports to advertise; a change is announced at the next tick.
+    pub fn set_ports(&mut self, ports: Ports) {
+        if self.ports != ports {
+            self.ports = ports;
+            self.last_advertisement = None;
         }
     }
 
-    /// Process pending datagrams, expire stale peers, and announce a host
-    /// when due. Call this from the frontend redraw loop.
+    /// Process pending datagrams, expire stale peers, and announce this
+    /// process when due. Call this from the frontend redraw loop.
     pub fn tick(&mut self) {
         let now = Instant::now();
 
-        if let Some(port) = self.host_port {
-            let due = self
-                .last_advertisement
-                .is_none_or(|sent| now.duration_since(sent) >= BROADCAST_INTERVAL);
-            if due {
-                self.last_advertisement = Some(now);
-                self.send_advertisement(port);
-            }
+        let due = self
+            .last_advertisement
+            .is_none_or(|sent| now.duration_since(sent) >= BROADCAST_INTERVAL);
+        if due && self.socket.is_some() {
+            self.last_advertisement = Some(now);
+            self.send_advertisement();
         }
 
         self.receive_pending(now);
@@ -132,16 +149,11 @@ impl Discovery {
         self.peers.iter().map(|entry| entry.peer.clone()).collect()
     }
 
-    /// Return the latest non-fatal socket error, if any.
-    pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
-    }
-
-    fn send_advertisement(&mut self, port: u16) {
+    fn send_advertisement(&mut self) {
         let Some(socket) = self.socket.as_ref() else {
             return;
         };
-        let packet = build_packet(port, &self.display_name, self.instance_id);
+        let packet = build_packet(self.ports, &self.display_name, self.instance_id);
         match send_to_discovery_targets(socket, &packet) {
             Ok(()) => self.error = None,
             Err(error) => self.error = Some(error.to_string()),
@@ -182,27 +194,22 @@ impl Discovery {
         if parsed.instance_id == self.instance_id {
             return;
         }
-
-        if parsed.host_port == 0 {
-            self.peers
-                .retain(|entry| entry.peer.id != parsed.instance_id);
-            return;
-        }
-
         self.upsert_peer(
             parsed.instance_id,
             parsed.name,
-            SocketAddr::new(source.ip(), parsed.host_port),
+            source.ip(),
+            parsed.ports,
             now,
         );
     }
 
-    fn upsert_peer(&mut self, id: u64, name: String, address: SocketAddr, now: Instant) {
+    fn upsert_peer(&mut self, id: u64, name: String, ip: IpAddr, ports: Ports, now: Instant) {
         if let Some(entry) = self.peers.iter_mut().find(|entry| entry.peer.id == id) {
             // A local loopback copy and a LAN broadcast can arrive for the
             // same instance. Keep the routable address when both are seen.
-            entry.peer.address = preferred_address(entry.peer.address, address);
+            entry.peer.ip = preferred_ip(entry.peer.ip, ip);
             entry.peer.name = name;
+            entry.peer.ports = ports;
             entry.last_seen = now;
             return;
         }
@@ -219,7 +226,12 @@ impl Discovery {
         }
 
         self.peers.push(PeerEntry {
-            peer: Peer { id, name, address },
+            peer: Peer {
+                id,
+                name,
+                ip,
+                ports,
+            },
             last_seen: now,
         });
     }
@@ -230,8 +242,8 @@ impl Discovery {
     }
 }
 
-fn preferred_address(previous: SocketAddr, incoming: SocketAddr) -> SocketAddr {
-    if !previous.ip().is_loopback() && incoming.ip().is_loopback() {
+fn preferred_ip(previous: IpAddr, incoming: IpAddr) -> IpAddr {
+    if !previous.is_loopback() && incoming.is_loopback() {
         previous
     } else {
         incoming
@@ -246,19 +258,21 @@ impl Default for Discovery {
 
 #[derive(Debug)]
 struct ParsedPacket {
-    host_port: u16,
+    ports: Ports,
     name: String,
     instance_id: u64,
 }
 
-fn build_packet(host_port: u16, name: &str, instance_id: u64) -> [u8; PACKET_SIZE] {
+fn build_packet(ports: Ports, name: &str, instance_id: u64) -> [u8; PACKET_SIZE] {
     let mut packet = [0u8; PACKET_SIZE];
     packet[0..4].copy_from_slice(MAGIC);
     packet[4..6].copy_from_slice(&PROTOCOL_VERSION.to_le_bytes());
-    packet[6..8].copy_from_slice(&host_port.to_le_bytes());
-    write_fixed_string(&mut packet[8..8 + SERVICE_FIELD_SIZE], SERVICE);
+    packet[6..8].copy_from_slice(&ports.serial.to_le_bytes());
+    packet[8..10].copy_from_slice(&ports.modem.to_le_bytes());
+    let service_end = SERVICE_START + SERVICE_FIELD_SIZE;
+    write_fixed_string(&mut packet[SERVICE_START..service_end], SERVICE);
     write_fixed_string(
-        &mut packet[8 + SERVICE_FIELD_SIZE..8 + SERVICE_FIELD_SIZE + NAME_FIELD_SIZE],
+        &mut packet[service_end..service_end + NAME_FIELD_SIZE],
         name,
     );
     packet[PACKET_SIZE - 8..].copy_from_slice(&instance_id.to_le_bytes());
@@ -273,9 +287,12 @@ fn parse_packet(data: &[u8]) -> Option<ParsedPacket> {
         return None;
     }
 
-    let host_port = u16::from_le_bytes([data[6], data[7]]);
-    let service_end = 8 + SERVICE_FIELD_SIZE;
-    if read_fixed_string(&data[8..service_end])? != SERVICE {
+    let ports = Ports {
+        serial: u16::from_le_bytes([data[6], data[7]]),
+        modem: u16::from_le_bytes([data[8], data[9]]),
+    };
+    let service_end = SERVICE_START + SERVICE_FIELD_SIZE;
+    if read_fixed_string(&data[SERVICE_START..service_end])? != SERVICE {
         return None;
     }
 
@@ -283,12 +300,12 @@ fn parse_packet(data: &[u8]) -> Option<ParsedPacket> {
     let name = sanitize_name(read_fixed_string(&data[service_end..name_end])?);
     let id_start = PACKET_SIZE - 8;
     let instance_id = u64::from_le_bytes(data[id_start..].try_into().ok()?);
-    if instance_id == 0 || (host_port == 0 && name.is_empty()) {
+    if instance_id == 0 {
         return None;
     }
 
     Some(ParsedPacket {
-        host_port,
+        ports,
         name,
         instance_id,
     })
@@ -435,46 +452,51 @@ mod tests {
     use super::*;
     use std::thread;
 
+    fn ports(serial: u16, modem: u16) -> Ports {
+        Ports { serial, modem }
+    }
+
     #[test]
     fn packet_parser_filters_service_and_rejects_malformed_fields() {
-        let packet = build_packet(23_001, "workstation", 0x1234_5678_9ABC_DEF0);
+        let packet = build_packet(ports(23_001, 23_002), "workstation", 0x1234_5678_9ABC_DEF0);
         let parsed = parse_packet(&packet).unwrap();
-        assert_eq!(parsed.host_port, 23_001);
+        assert_eq!(parsed.ports, ports(23_001, 23_002));
         assert_eq!(parsed.name, "workstation");
         assert_eq!(parsed.instance_id, 0x1234_5678_9ABC_DEF0);
 
         let mut wrong_service = packet;
-        wrong_service[8] = b'x';
+        wrong_service[SERVICE_START] = b'x';
         assert!(parse_packet(&wrong_service).is_none());
         assert!(parse_packet(&packet[..PACKET_SIZE - 1]).is_none());
 
         let mut wrong_version = packet;
-        wrong_version[4] = 2;
+        wrong_version[4] = 1;
         assert!(parse_packet(&wrong_version).is_none());
 
         let mut control_character = packet;
-        control_character[8 + SERVICE_FIELD_SIZE] = b'\n';
+        control_character[SERVICE_START + SERVICE_FIELD_SIZE] = b'\n';
         assert!(parse_packet(&control_character).is_none());
 
         let mut invalid_utf8 = packet;
-        invalid_utf8[8 + SERVICE_FIELD_SIZE] = 0xFF;
+        invalid_utf8[SERVICE_START + SERVICE_FIELD_SIZE] = 0xFF;
         assert!(parse_packet(&invalid_utf8).is_none());
+
+        let mut no_id = packet;
+        no_id[PACKET_SIZE - 8..].fill(0);
+        assert!(parse_packet(&no_id).is_none());
     }
 
     #[test]
     fn expiry_uses_the_last_seen_time_without_sleeping() {
         let now = Instant::now();
         let mut discovery = Discovery::new();
-        discovery.upsert_peer(
-            10,
-            "host-a".to_owned(),
-            SocketAddr::from(([192, 168, 1, 10], 23_001)),
-            now,
-        );
+        let lan = |last| IpAddr::V4(Ipv4Addr::new(192, 168, 1, last));
+        discovery.upsert_peer(10, "host-a".to_owned(), lan(10), ports(1, 0), now);
         discovery.upsert_peer(
             20,
             "host-b".to_owned(),
-            SocketAddr::from(([192, 168, 1, 20], 23_002)),
+            lan(20),
+            ports(0, 2),
             now - Duration::from_secs(5),
         );
 
@@ -493,8 +515,8 @@ mod tests {
     fn self_packets_are_ignored_and_same_host_routes_are_deduplicated() {
         let now = Instant::now();
         let mut discovery = Discovery::new();
-        let own_id = discovery.instance_id;
-        let self_packet = build_packet(23_101, "self", own_id);
+        let own_id = discovery.instance_id();
+        let self_packet = build_packet(ports(23_101, 0), "self", own_id);
         discovery.process_datagram(
             &self_packet,
             SocketAddr::from(([127, 0, 0, 1], 23_517)),
@@ -503,28 +525,47 @@ mod tests {
         assert!(discovery.peers().is_empty());
 
         let peer_id = own_id.wrapping_add(1).max(1);
-        let packet = build_packet(23_102, "remote", peer_id);
+        let packet = build_packet(ports(23_102, 0), "remote", peer_id);
         discovery.process_datagram(&packet, SocketAddr::from(([127, 0, 0, 1], 23_517)), now);
         discovery.process_datagram(
             &packet,
             SocketAddr::from(([192, 168, 1, 22], 23_518)),
             now + Duration::from_millis(1),
         );
-
         assert_eq!(discovery.peers().len(), 1);
         assert_eq!(discovery.peers()[0].id, peer_id);
         assert_eq!(
-            discovery.peers()[0].address.ip(),
+            discovery.peers()[0].ip,
             IpAddr::V4(Ipv4Addr::new(192, 168, 1, 22))
         );
 
-        let withdrawal = build_packet(0, "remote", peer_id);
+        // A later announcement replaces the ports; none open keeps the peer.
+        let busy = build_packet(ports(0, 0), "remote", peer_id);
         discovery.process_datagram(
-            &withdrawal,
+            &busy,
             SocketAddr::from(([192, 168, 1, 22], 23_518)),
             now + Duration::from_millis(2),
         );
+        assert_eq!(discovery.peers()[0].ports, ports(0, 0));
+    }
+
+    #[test]
+    fn an_inactive_discovery_holds_no_socket_and_forgets_peers() {
+        let mut discovery = Discovery::new();
+        assert!(discovery.socket.is_none());
+        discovery.upsert_peer(
+            7,
+            "peer".into(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            ports(1, 1),
+            Instant::now(),
+        );
+        discovery.socket = Some(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap());
+        discovery.set_active(false);
+        assert!(discovery.socket.is_none());
         assert!(discovery.peers().is_empty());
+        discovery.tick();
+        assert!(discovery.socket.is_none());
     }
 
     #[test]
@@ -533,14 +574,14 @@ mod tests {
         receiver.set_nonblocking(true).unwrap();
         let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let mut discovery = Discovery::new();
-        let own_id = discovery.instance_id;
+        let own_id = discovery.instance_id();
         let peer_id = own_id.wrapping_add(1).max(1);
         let receiver_addr = receiver.local_addr().unwrap();
         discovery.socket = Some(receiver);
 
-        let packet = build_packet(23_111, "local-host", peer_id);
+        let packet = build_packet(ports(23_111, 23_112), "local-host", peer_id);
         sender.send_to(&packet, receiver_addr).unwrap();
-        let self_packet = build_packet(23_112, "self", own_id);
+        let self_packet = build_packet(ports(23_113, 0), "self", own_id);
         sender.send_to(&self_packet, receiver_addr).unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -557,21 +598,7 @@ mod tests {
         assert_eq!(peers.len(), 1, "self packets must not appear as peers");
         assert_eq!(peers[0].id, peer_id);
         assert_eq!(peers[0].name, "local-host");
-        assert_eq!(
-            peers[0].address,
-            SocketAddr::from((Ipv4Addr::LOCALHOST, 23_111))
-        );
-
-        let withdrawal = build_packet(0, "local-host", peer_id);
-        sender.send_to(&withdrawal, receiver_addr).unwrap();
-        let withdrawal_deadline = Instant::now() + Duration::from_secs(2);
-        while !discovery.peers().is_empty() {
-            discovery.tick();
-            assert!(
-                Instant::now() < withdrawal_deadline,
-                "withdrawal should remove the peer"
-            );
-            thread::sleep(Duration::from_millis(1));
-        }
+        assert_eq!(peers[0].ip, IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(peers[0].ports, ports(23_111, 23_112));
     }
 }

@@ -6,6 +6,7 @@ mod device_audio;
 mod discovery;
 mod emulation;
 mod input;
+mod link;
 mod output;
 mod overlay;
 mod pacing;
@@ -17,8 +18,9 @@ mod shutdown;
 use anyhow::{Context, Result};
 use cli::{Command, Options};
 use emulation::{Emulation, Input, Notice, SOUND_HINT};
-use gp64_machine::modem::ModemConnection;
+use gp64_machine::modem::{LineStatus, ModemConnection, ModemLine};
 use std::{
+    net::SocketAddr,
     num::NonZeroU32,
     path::PathBuf,
     sync::{atomic::Ordering, Arc},
@@ -60,7 +62,7 @@ fn report_result(result: Result<u8>, stderr: &mut impl std::io::Write) -> u8 {
     }
 }
 fn run() -> Result<u8> {
-    let mut options = match cli::parse(std::env::args_os().skip(1))? {
+    let options = match cli::parse(std::env::args_os().skip(1))? {
         Command::Help => {
             println!("{}", cli::help_text(cli::stdout_wants_color()));
             return Ok(0);
@@ -96,20 +98,6 @@ fn run() -> Result<u8> {
     }
     shutdown::install()?;
     let saved = settings::load();
-    saved.apply(&mut options);
-    // A launch line shows in the menu for this run; it is saved only when
-    // started from the menu.
-    let (host_port, join) = match &options.modem {
-        Some(ModemConnection::Host(port)) => (*port, saved.join().unwrap_or_default().to_owned()),
-        Some(ModemConnection::Join(address)) => (
-            saved.host_port().unwrap_or(cli::DEFAULT_HOST_PORT),
-            address.clone(),
-        ),
-        None => (
-            saved.host_port().unwrap_or(cli::DEFAULT_HOST_PORT),
-            saved.join().unwrap_or_default().to_owned(),
-        ),
-    };
     let events = EventLoop::<Notice>::with_user_event().build()?;
     // `--mute` opens no device at all; a saved mute opens it silenced so
     // the menu can unmute.
@@ -118,17 +106,13 @@ fn run() -> Result<u8> {
     } else {
         Some(device_audio::Output::open(saved.mute)?)
     };
-    let mut discovery = discovery::Discovery::new();
-    if let Err(error) = discovery.start() {
-        eprintln!("gp64: LAN discovery unavailable: {error}");
-    }
     let mut app = App {
         menu: overlay::Menu::default(),
-        discovery,
+        // No socket opens until a link is enabled.
+        discovery: discovery::Discovery::new(),
+        serial: link::AutoLink::new(saved.serial_link),
+        modem: link::AutoLink::new(saved.modem_link),
         guest_paused: false,
-        com: options.com,
-        host_port,
-        join,
         launch: Some((options, folder, program)),
         proxy: events.create_proxy(),
         audio,
@@ -177,15 +161,13 @@ struct App {
     saved: settings::Settings,
     menu: overlay::Menu,
     discovery: discovery::Discovery,
-    /// The menu holds the guest still. It does so only while no phone line
-    /// is up or coming up; see [`App::sync_pause`].
+    /// The COM1 null-modem link to another gp64 on the LAN.
+    serial: link::AutoLink,
+    /// The COM2 modem link to another gp64 on the LAN.
+    modem: link::AutoLink,
+    /// The menu holds the guest still. It does so only while no link is in
+    /// use; see [`App::sync_pause`].
     guest_paused: bool,
-    /// The modem's COM port for this run.
-    com: u8,
-    /// The port HOST PORT listens on.
-    host_port: u16,
-    /// The address JOIN dials.
-    join: String,
     program: String,
     hint_until: Option<Instant>,
     /// A recording result shown in the title until the given time.
@@ -267,10 +249,31 @@ impl App {
             .as_ref()
             .and_then(|emulation| emulation.recording.get())
     }
-    fn modem_line(&self) -> Option<&gp64_machine::modem::ModemLine> {
+    fn links(&self) -> Option<&emulation::Links> {
         self.emulation
             .as_ref()
-            .and_then(|emulation| emulation.modem.get())
+            .and_then(|emulation| emulation.links.get())
+    }
+    /// A link as the menu shows it, named after its peer when known.
+    fn link_view(&self, auto: &link::AutoLink, line: Option<&ModemLine>) -> overlay::Link {
+        let status = line.map(ModemLine::status).unwrap_or_default();
+        let peer = match &status {
+            LineStatus::Connected(address) => {
+                address.parse::<SocketAddr>().ok().and_then(|address| {
+                    self.discovery
+                        .peers()
+                        .into_iter()
+                        .find(|peer| peer.ip == address.ip())
+                        .map(|peer| peer.name)
+                })
+            }
+            _ => None,
+        };
+        overlay::Link {
+            enabled: auto.enabled,
+            status,
+            peer,
+        }
     }
     fn menu_values(&self) -> overlay::Values {
         let muted = self.audio.as_ref().map(|audio| &audio.muted);
@@ -280,29 +283,61 @@ impl App {
             mute: muted.is_none_or(|muted| muted.load(Ordering::Relaxed)),
             mute_locked: muted.is_none(),
             recording: self.recording(),
-            modem: self
-                .modem_line()
-                .map(|line| line.status())
-                .unwrap_or_default(),
-            com: self.com,
-            next_com: self.saved.com().unwrap_or(self.com),
-            host_port: self.host_port,
-            join: self.join.clone(),
-            peers: self.discovery.peers(),
-            discovery_error: self.discovery.error().map(str::to_owned),
+            serial: self.link_view(&self.serial, self.links().map(|links| &links.serial)),
+            modem: self.link_view(&self.modem, self.links().map(|links| &links.modem)),
         }
     }
-    /// Starts a phone line; a refusal shows in the menu's MODEM row.
-    fn start_line(&self, connection: &ModemConnection) {
-        if let Some(line) = self.modem_line() {
-            if let Err(error) = line.start(connection) {
-                eprintln!("gp64: modem: {error}");
+    /// Opens discovery while a link is enabled, and moves each link one
+    /// step: listen, call a peer, or hang up. Runs on every frame.
+    fn drive_links(&mut self) {
+        self.discovery
+            .set_active(self.serial.enabled || self.modem.enabled);
+        let Some(links) = self.emulation.as_ref().and_then(|e| e.links.get()) else {
+            return;
+        };
+        let now = Instant::now();
+        let own_id = self.discovery.instance_id();
+        let peers = self.discovery.peers();
+        type PortOf = fn(&discovery::Ports) -> u16;
+        for (auto, line, port_of, name) in [
+            (
+                &mut self.serial,
+                &links.serial,
+                (|ports| ports.serial) as PortOf,
+                "serial",
+            ),
+            (&mut self.modem, &links.modem, |ports| ports.modem, "modem"),
+        ] {
+            let candidates = peers
+                .iter()
+                .filter(|peer| port_of(&peer.ports) != 0)
+                .map(|peer| (peer.id, SocketAddr::new(peer.ip, port_of(&peer.ports))));
+            let result = match auto.step(&line.status(), own_id, candidates, now) {
+                link::Step::None => Ok(()),
+                link::Step::Listen => line.start(&ModemConnection::Host(0)).map(drop),
+                link::Step::Call(address) => line.call(&address.to_string()),
+                link::Step::HangUp => {
+                    line.hang_up();
+                    Ok(())
+                }
+            };
+            if let Err(error) = result {
+                eprintln!("gp64: {name} link: {error}");
             }
         }
+        let listening = |line: &ModemLine| match line.status() {
+            LineStatus::Listening(port) => port,
+            _ => 0,
+        };
+        self.discovery.set_ports(discovery::Ports {
+            serial: listening(&links.serial),
+            modem: listening(&links.modem),
+        });
+        self.discovery.tick();
     }
-    /// Holds the guest while the menu is open and no phone line is up or
-    /// coming up; lines start and end while the menu is open, so this runs
-    /// after every menu change and on every frame.
+    /// Holds the guest while the menu is open and no link is in use; links
+    /// connect and drop while the menu is open, so this runs after every
+    /// menu change and on every frame.
     fn sync_pause(&mut self) {
         let pause = self.menu.is_open() && self.menu_values().pauses();
         if pause != self.guest_paused {
@@ -339,23 +374,18 @@ impl App {
                 }
             }
             overlay::Action::Record(on) => self.send(Input::Record(on)),
-            overlay::Action::Com(com) => {
-                self.saved.com = Some(com);
+            overlay::Action::Serial(on) => {
+                self.serial.enabled = on;
+                self.saved.serial_link = on;
                 settings::save(&self.saved);
             }
-            overlay::Action::Host(port) => {
-                self.host_port = port;
-                self.saved.modem_host_port = Some(port);
+            overlay::Action::Modem(on) => {
+                self.modem.enabled = on;
+                self.saved.modem_link = on;
                 settings::save(&self.saved);
-                self.start_line(&ModemConnection::Host(port));
-            }
-            overlay::Action::Join(address) => {
-                self.join.clone_from(&address);
-                self.saved.modem_join = Some(address.clone());
-                settings::save(&self.saved);
-                self.start_line(&ModemConnection::Join(address));
             }
         }
+        self.drive_links();
         self.sync_pause();
     }
     fn draw(&mut self) -> Result<()> {
@@ -522,11 +552,8 @@ impl ApplicationHandler<Notice> for App {
                         }
                     } else if self.menu.is_open() {
                         // While the menu is open no key reaches the guest.
-                        if down {
-                            let text = event.text.as_deref();
-                            for key in overlay::keys(key, text, self.menu.editing()) {
-                                self.menu_key(key);
-                            }
+                        if let Some(key) = overlay::Key::from_code(key).filter(|_| down) {
+                            self.menu_key(key);
                         }
                     } else if let Some(packet) = self.keyboard.event(key, down) {
                         self.send(Input::Key(packet));
@@ -579,13 +606,7 @@ impl ApplicationHandler<Notice> for App {
         if shutdown::requested() {
             events.exit();
         }
-        let host_port = self.modem_line().and_then(|line| match line.status() {
-            gp64_machine::modem::LineStatus::Listening(port) => Some(port),
-            _ => None,
-        });
-        self.discovery.set_host(host_port);
-        self.discovery.tick();
-        self.menu.update_peers(&self.discovery.peers());
+        self.drive_links();
         self.sync_pause();
         let now = Instant::now();
         if self.hint_until.is_some_and(|until| now >= until) {

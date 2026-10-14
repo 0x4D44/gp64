@@ -1,9 +1,6 @@
 //! Menu choices kept between runs in the per-user configuration folder,
 //! never in the program's folder. Command-line flags win for one run.
-use crate::{
-    cli::{self, Options},
-    scaler::Scaler,
-};
+use crate::scaler::Scaler;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
@@ -18,36 +15,12 @@ pub struct Settings {
     pub scaler: Scaler,
     pub fullscreen: bool,
     pub mute: bool,
-    /// Modem COM port (1 or 2) from the next launch; `None` keeps the default.
-    pub com: Option<u8>,
-    /// The last TCP port hosted from the menu.
-    pub modem_host_port: Option<u16>,
-    /// The last `host:port` joined from the menu. An address, never a secret.
-    pub modem_join: Option<String>,
+    /// The COM1 null-modem cable links to another gp64 on the LAN. Off by
+    /// default: a link listens on the network.
+    pub serial_link: bool,
+    /// The COM2 modem links to another gp64 on the LAN. Off by default.
+    pub modem_link: bool,
 }
-impl Settings {
-    /// The saved host port, if it is a usable one.
-    pub fn host_port(&self) -> Option<u16> {
-        self.modem_host_port.filter(|&port| port != 0)
-    }
-    /// The saved join address, if it is a usable one.
-    pub fn join(&self) -> Option<&str> {
-        self.modem_join.as_deref().and_then(cli::parse_join)
-    }
-    /// The saved modem COM port, if it is a usable one.
-    pub fn com(&self) -> Option<u8> {
-        self.com.filter(|com| (1..=2).contains(com))
-    }
-    /// Applies saved choices that the command line left unset.
-    pub fn apply(&self, options: &mut Options) {
-        if !options.com_given {
-            if let Some(com) = self.com() {
-                options.com = com;
-            }
-        }
-    }
-}
-
 /// `<config dir>/gp64/settings.json`, where the platform has a config dir.
 pub fn path() -> Option<PathBuf> {
     gp64_types::host_dirs::config_dir().map(|dir| dir.join("gp64").join("settings.json"))
@@ -146,7 +119,6 @@ pub fn save(settings: &Settings) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::{parse, Command};
     use std::{
         ffi::OsString,
         sync::atomic::{AtomicU64, Ordering},
@@ -176,13 +148,6 @@ mod tests {
             }
         }
     }
-    fn options(args: &[&str]) -> Options {
-        match parse(args.iter().map(std::ffi::OsString::from)).unwrap() {
-            Command::Run(options) => options,
-            _ => panic!(),
-        }
-    }
-
     #[test]
     fn settings_round_trip_through_an_atomic_write() {
         let folder = folder("round-trip");
@@ -191,9 +156,8 @@ mod tests {
             scaler: Scaler::Smooth,
             fullscreen: true,
             mute: true,
-            com: Some(1),
-            modem_host_port: Some(2300),
-            modem_join: Some("peer.example:2300".into()),
+            serial_link: true,
+            modem_link: true,
         };
         save_to(&path, &settings).unwrap();
         let mut stderr = Vec::new();
@@ -215,15 +179,14 @@ mod tests {
         let folder = folder("overlap");
         let path = folder.join("settings.json");
         let longer = Settings {
+            scaler: Scaler::Smooth,
             fullscreen: true,
-            modem_join: Some(format!("{}:2300", "peer".repeat(1024))),
-            ..Settings::default()
+            mute: true,
+            serial_link: true,
+            modem_link: true,
         };
         let shorter = Settings {
-            scaler: Scaler::Smooth,
             mute: true,
-            com: Some(1),
-            modem_host_port: Some(2400),
             ..Settings::default()
         };
         let (short_opened_tx, short_opened_rx) = mpsc::channel();
@@ -346,60 +309,20 @@ mod tests {
         for speed in [0, 8, 33, 1000] {
             let saved: Settings =
                 serde_json::from_str(&format!("{{\"speed_mhz\":{speed}}}")).unwrap();
-            let mut plain = options(&[]);
-            saved.apply(&mut plain);
-            assert_eq!(plain, options(&[]));
+            assert_eq!(saved, Settings::default());
             assert!(!serde_json::to_string(&saved).unwrap().contains("speed_mhz"));
         }
     }
 
     #[test]
-    fn command_line_com_overrides_the_saved_com() {
-        let saved = Settings {
-            com: Some(1),
-            ..Settings::default()
-        };
-        let mut plain = options(&[]);
-        saved.apply(&mut plain);
-        assert_eq!(plain.com, 1);
-        let mut flagged = options(&["--com", "2"]);
-        saved.apply(&mut flagged);
-        assert_eq!(flagged.com, 2);
-        for unusable in [Some(0), Some(3), None] {
-            let mut default = options(&[]);
-            Settings {
-                com: unusable,
-                ..Settings::default()
-            }
-            .apply(&mut default);
-            assert_eq!(default.com, 2);
-        }
-    }
-
-    #[test]
-    fn unusable_saved_modem_values_are_ignored() {
-        let saved = Settings {
-            modem_host_port: Some(0),
-            modem_join: Some("no-port".into()),
-            ..Settings::default()
-        };
-        assert_eq!((saved.host_port(), saved.join()), (None, None));
-        let saved = Settings {
-            modem_host_port: Some(5000),
-            modem_join: Some("h:1".into()),
-            ..Settings::default()
-        };
-        assert_eq!((saved.host_port(), saved.join()), (Some(5000), Some("h:1")));
-    }
-
-    #[test]
-    fn a_file_from_before_the_modem_settings_still_loads() {
+    fn older_files_load_with_both_links_off() {
         let folder = folder("older");
         let path = folder.join("settings.json");
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(
             &path,
-            "{\"scaler\":\"smooth\",\"fullscreen\":true,\"mute\":false,\"speed_mhz\":25}",
+            "{\"scaler\":\"smooth\",\"fullscreen\":true,\"mute\":false,\"speed_mhz\":25,\
+             \"com\":1,\"modem_host_port\":2300,\"modem_join\":\"peer:2300\"}",
         )
         .unwrap();
         let mut stderr = Vec::new();

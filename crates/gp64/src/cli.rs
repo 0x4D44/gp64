@@ -1,6 +1,6 @@
 //! The command line is independent of window and device creation.
 use anyhow::{bail, Context, Result};
-use gp64_machine::{launcher, modem::ModemConnection};
+use gp64_machine::launcher;
 use std::{
     ffi::OsString,
     io::IsTerminal,
@@ -19,8 +19,7 @@ const RAINBOW: &[(u8, u8, u8)] = &[
     (215, 135, 255), // violet
 ];
 
-const USAGE: &str =
-    "gp64 [--mute] [--record FILE] [--host PORT | --join HOST:PORT] [--com 1|2] [--wait] [program [args]]";
+const USAGE: &str = "gp64 [--mute] [--record FILE] [--wait] [program [args]]";
 const INTRO: &str = "Runs a DOS program from its own folder, or the default launcher beside gp64\nor, failing that, in the current folder.";
 const OPTIONS: &[(&str, &str)] = &[
     ("--mute", "Disable host audio output"),
@@ -28,9 +27,6 @@ const OPTIONS: &[(&str, &str)] = &[
         "--record FILE",
         "Record native video and mixed audio to MKV/WebM",
     ),
-    ("--host PORT", "Listen for a TCP modem connection"),
-    ("--join HOST:PORT", "Connect to a TCP modem host"),
-    ("--com 1|2", "Modem COM port (default 2)"),
     (
         "--wait",
         "Windows: keep the prompt until gp64 exits, with its messages",
@@ -41,11 +37,11 @@ const OPTIONS: &[(&str, &str)] = &[
 const CONTROLS: &[(&str, &str)] = &[
     (
         "F12:",
-        "menu (scaler, fullscreen, mute, recording, modem setup submenu);",
+        "menu (scaler, fullscreen, mute, recording, serial link, modem);",
     ),
     (
         "",
-        "F12 closes, Escape goes back. Pauses unless a modem line is up. Recordings go to\nyour video folder, named by date and program; a red REC light shows\nwhile recording",
+        "F12 or Escape closes. Pauses unless a link is connected. Recordings go to\nyour video folder, named by date and program; a red REC light shows\nwhile recording",
     ),
     (
         "F11:",
@@ -57,7 +53,7 @@ const CONTROLS: &[(&str, &str)] = &[
 ];
 const NOTES: &[&str] = &[
     "CPU speed adjusts automatically to host capacity; timers and audio keep normal time.",
-    "LAN hosts appear under modem setup. Manual host/join addresses remain available.",
+    "Serial (COM1) and modem (COM2) links find another gp64 on the LAN by themselves.",
     "Menu choices are saved per user; command-line options win for that run.",
 ];
 
@@ -145,18 +141,6 @@ pub fn help_text(color: bool) -> String {
     lines.join("\n")
 }
 
-/// The TCP port the menu offers for hosting until another is typed.
-pub const DEFAULT_HOST_PORT: u16 = 23456;
-/// A port to listen on: 1 to 65535. Shared by `--host` and the menu.
-pub fn parse_host_port(text: &str) -> Option<u16> {
-    text.parse::<u16>().ok().filter(|&port| port != 0)
-}
-/// `HOST:PORT` with a host and a port of 1 to 65535. Shared by `--join`
-/// and the menu.
-pub fn parse_join(text: &str) -> Option<&str> {
-    let (host, port) = text.rsplit_once(':')?;
-    (!host.is_empty() && parse_host_port(port).is_some()).then_some(text)
-}
 #[derive(Debug, PartialEq)]
 pub enum Command {
     Help,
@@ -167,10 +151,6 @@ pub enum Command {
 pub struct Options {
     pub mute: bool,
     pub record: Option<PathBuf>,
-    pub modem: Option<ModemConnection>,
-    pub com: u8,
-    /// `--com` was given, so it overrides the saved COM port.
-    pub com_given: bool,
     /// Stay attached to the console instead of detaching on Windows.
     pub wait: bool,
     pub program: Option<PathBuf>,
@@ -181,9 +161,6 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command> {
     let mut options = Options {
         mute: false,
         record: None,
-        modem: None,
-        com: 2,
-        com_given: false,
         wait: false,
         program: None,
         args: String::new(),
@@ -194,40 +171,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command> {
             Some("--version" | "-V") => return Ok(Command::Version),
             Some("--mute") => options.mute = true,
             Some("--wait") => options.wait = true,
-            Some("--com") => {
-                let value = args.next().context("--com requires 1 or 2")?;
-                options.com = match value.to_str() {
-                    Some("1") => 1,
-                    Some("2") => 2,
-                    _ => bail!("--com requires 1 or 2"),
-                };
-                options.com_given = true;
-            }
-            Some(flag @ ("--record" | "--host" | "--join")) => {
-                let value = args
-                    .next()
-                    .with_context(|| format!("{flag} requires a value"))?;
-                if flag != "--record" {
-                    if options.modem.is_some() {
-                        bail!("--host and --join are mutually exclusive");
-                    }
-                }
-                if flag == "--host" {
-                    let port = value
-                        .to_str()
-                        .and_then(parse_host_port)
-                        .context("invalid --host port")?;
-                    options.modem = Some(ModemConnection::Host(port));
-                }
-                if flag == "--join" {
-                    let address = value.to_str().context("invalid --join address")?.to_owned();
-                    if parse_join(&address).is_none() {
-                        bail!("--join requires HOST:PORT");
-                    }
-                    options.modem = Some(ModemConnection::Join(address));
-                } else if flag == "--record" {
-                    options.record = Some(value.into());
-                }
+            Some("--record") => {
+                let value = args.next().context("--record requires a value")?;
+                options.record = Some(value.into());
             }
             Some("--") => {
                 if let Some(program) = args.next() {
@@ -373,12 +319,6 @@ mod tests {
             "Disable host audio output",
             "--record FILE",
             "Record native video and mixed audio to MKV/WebM",
-            "--host PORT",
-            "Listen for a TCP modem connection",
-            "--join HOST:PORT",
-            "Connect to a TCP modem host",
-            "--com 1|2",
-            "Modem COM port (default 2)",
             "--wait",
             "Windows: keep the prompt until gp64 exits, with its messages",
             "--help",
@@ -386,8 +326,8 @@ mod tests {
             "--version",
             "Show version",
             "F12:",
-            "menu (scaler, fullscreen, mute, recording, modem setup submenu);",
-            "F12 closes, Escape goes back. Pauses unless a modem line is up. Recordings go to",
+            "menu (scaler, fullscreen, mute, recording, serial link, modem);",
+            "F12 or Escape closes. Pauses unless a link is connected. Recordings go to",
             "your video folder, named by date and program; a red REC light shows",
             "while recording",
             "F11:",
@@ -399,7 +339,7 @@ mod tests {
             "Ctrl+F10:",
             "release mouse",
             "CPU speed adjusts automatically to host capacity; timers and audio keep normal time.",
-            "LAN hosts appear under modem setup. Manual host/join addresses remain available.",
+            "Serial (COM1) and modem (COM2) links find another gp64 on the LAN by themselves.",
             "Menu choices are saved per user; command-line options win for that run.",
         ] {
             assert!(text.contains(expected), "help is missing {expected:?}");
@@ -417,9 +357,6 @@ mod tests {
             Command::Run(Options {
                 mute: true,
                 record: None,
-                modem: None,
-                com: 2,
-                com_given: false,
                 wait: false,
                 program: Some("dir/test.com".into()),
                 args: "\"a b\" --speed".into(),
@@ -443,57 +380,17 @@ mod tests {
         assert_eq!(options.args, "--wait");
         assert!(command(&["--record"]).is_err());
         for args in [
-            vec!["--host", "0"],
-            vec!["--host", "65536"],
-            vec!["--join", "host"],
             vec!["--speed"],
             vec!["--wat"],
-            vec!["--host", "1", "--join", "host:1"],
+            // Links are set from the menu and find their peer by themselves.
+            vec!["--host", "1234"],
+            vec!["--join", "host:1234"],
+            vec!["--com", "1"],
         ] {
             assert!(command(&args).is_err());
         }
         assert_eq!(command(&["--help"]).unwrap(), Command::Help);
         assert_eq!(command(&["--version"]).unwrap(), Command::Version);
-    }
-    #[test]
-    fn direct_modem_options() {
-        for (args, expected, com) in [
-            (vec!["--host", "1234"], ModemConnection::Host(1234), 2),
-            (
-                vec!["--com", "1", "--join", "localhost:1234"],
-                ModemConnection::Join("localhost:1234".into()),
-                1,
-            ),
-        ] {
-            let Command::Run(options) = command(&args).unwrap() else {
-                panic!()
-            };
-            assert_eq!(options.modem, Some(expected));
-            assert_eq!(options.com, com);
-            assert_eq!(options.com_given, com == 1);
-        }
-        for args in [vec!["--com"], vec!["--com", "0"], vec!["--com", "3"]] {
-            assert!(command(&args).is_err());
-        }
-    }
-    #[test]
-    fn host_and_join_values_share_one_parser() {
-        for (text, port) in [
-            ("1", Some(1)),
-            ("65535", Some(65535)),
-            ("23456", Some(23456)),
-        ] {
-            assert_eq!(parse_host_port(text), port);
-        }
-        for text in ["", "0", "65536", "-1", "12a", " 1"] {
-            assert_eq!(parse_host_port(text), None, "{text:?}");
-        }
-        for text in ["localhost:23", "10.0.0.2:23456", "[::1]:23", "a:b:1"] {
-            assert_eq!(parse_join(text), Some(text));
-        }
-        for text in ["", "host", ":23", "host:", "host:0", "host:70000", "host:x"] {
-            assert_eq!(parse_join(text), None, "{text:?}");
-        }
     }
     #[test]
     fn executable_folders() {

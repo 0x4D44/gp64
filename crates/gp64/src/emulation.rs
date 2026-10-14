@@ -44,12 +44,19 @@ pub struct Frame {
     pub width: usize,
     pub height: usize,
 }
+/// Line controls for the guest's two serial devices.
+pub struct Links {
+    /// The null-modem cable on COM1.
+    pub serial: ModemLine,
+    /// The modem on COM2.
+    pub modem: ModemLine,
+}
 pub struct Emulation {
     pub input: Sender<Input>,
     pub frame: Arc<Mutex<Option<Frame>>>,
     pub recording: Status,
-    /// The modem's phone line, once the guest has started.
-    pub modem: Arc<OnceLock<ModemLine>>,
+    /// The COM1 cable and COM2 phone line, once the guest has started.
+    pub links: Arc<OnceLock<Links>>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<Result<u8, String>>>,
 }
@@ -68,8 +75,8 @@ impl Emulation {
         let worker_stop = stop.clone();
         let status = Status::default();
         let worker_status = status.clone();
-        let modem = Arc::new(OnceLock::new());
-        let worker_modem = Arc::clone(&modem);
+        let links = Arc::new(OnceLock::new());
+        let worker_links = Arc::clone(&links);
         let thread = thread::Builder::new()
             .name("gp64-emulation".into())
             .spawn(move || {
@@ -84,13 +91,12 @@ impl Emulation {
                     };
                     dos.machine
                         .set_cycles_per_second(gp64_machine::DEFAULT_CYCLES_PER_SECOND);
-                    // The modem is always there so the menu can start a
-                    // line later; its COM port is fixed from here on.
-                    let line = dos.machine.attach_modem_line(options.com)?;
-                    if let Some(connection) = &options.modem {
-                        line.start(connection)?;
-                    }
-                    let _ = worker_modem.set(line);
+                    // Both are always plugged in, with nothing at the far
+                    // end until the menu enables a link.
+                    let _ = worker_links.set(Links {
+                        serial: dos.machine.attach_null_modem(1)?,
+                        modem: dos.machine.attach_modem_line(2)?,
+                    });
                     // A failure of the `--record` recording ends the run;
                     // a menu recording's failure is only reported.
                     if let Some(path) = &options.record {
@@ -251,7 +257,7 @@ impl Emulation {
             input,
             frame,
             recording: status,
-            modem,
+            links,
             stop,
             thread: Some(thread),
         })
@@ -564,7 +570,7 @@ mod tests {
             input,
             frame: Arc::new(Mutex::new(None)),
             recording: Status::default(),
-            modem: Arc::default(),
+            links: Arc::default(),
             stop,
             thread: Some(thread::spawn(move || {
                 let mut machine = gp64_machine::Machine::new();
