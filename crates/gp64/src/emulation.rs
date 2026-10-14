@@ -6,6 +6,7 @@ use crate::{
     output::{frames_for_ms, TARGET_FILL_MS},
     pacing::{Fill, Pacing},
     ring::Producer,
+    script::{self, Poll, Runner, Script},
 };
 use gp64::recording::{self, Finished, Recording, Status};
 use gp64_machine::{launcher, modem::ModemLine, DosMachine, DosRunExit};
@@ -65,6 +66,7 @@ impl Emulation {
         options: Options,
         folder: PathBuf,
         program: Option<String>,
+        script: Option<Script>,
         proxy: EventLoopProxy<Notice>,
         audio: Option<(u32, Producer)>,
     ) -> std::io::Result<Self> {
@@ -83,6 +85,7 @@ impl Emulation {
                 set_interactive_qos();
                 let mut audio = audio;
                 let mut recording = Recording::new(worker_status);
+                let mut script = script.map(Runner::new);
                 let result = (|| -> anyhow::Result<u8> {
                     let mut dos = if let Some(program) = program {
                         DosMachine::launch(&folder, &program, &options.args)?
@@ -234,10 +237,26 @@ impl Emulation {
                                 }
                             }
                         }
+                        // Only after guest time: a paused guest holds the script too.
+                        if let Some(runner) = &mut script {
+                            match runner.poll(&mut ScriptGuest(&mut dos)) {
+                                Poll::Running => {}
+                                Poll::Finished => return Ok(0),
+                                Poll::Failed(error) => anyhow::bail!("script: {error}"),
+                            }
+                        }
                         busy += started.elapsed();
                         match exit {
                             DosRunExit::Running => {}
-                            DosRunExit::Exited(code) => return Ok(code),
+                            DosRunExit::Exited(code) => {
+                                if script.is_some() {
+                                    tracing::warn!(
+                                        target: "gp64::script",
+                                        "the program exited with code {code} before the script finished"
+                                    );
+                                }
+                                return Ok(code);
+                            }
                             DosRunExit::Machine(exit) => {
                                 anyhow::bail!("emulation stopped: {exit:?}")
                             }
@@ -274,6 +293,35 @@ impl Emulation {
                 .map_err(|_| "emulation thread panicked".to_string())??;
         }
         Ok(())
+    }
+}
+/// The running machine as the script sees it.
+struct ScriptGuest<'a>(&'a mut DosMachine);
+impl script::Guest for ScriptGuest<'_> {
+    fn frame(&self) -> u64 {
+        self.0.machine.completed_frames()
+    }
+    fn key(&mut self, bytes: &[u8], index: usize, down: bool) {
+        let keyboard = &mut self.0.machine.io.keyboard;
+        keyboard.shared_state().inject_scancode(bytes, index, down);
+        keyboard.stage_output(&mut self.0.machine.io.pic);
+    }
+    fn place(&mut self, x: i32, y: i32) {
+        let (width, height) = self.0.machine.io.vga.completed_dimensions();
+        self.0.mouse_place(x, y, width, height);
+    }
+    fn button(&mut self, button: u8, down: bool) {
+        self.0.mouse_button(button, down);
+    }
+    fn picture(&self) -> (&[u32], usize, usize) {
+        let vga = &self.0.machine.io.vga;
+        let pixels = vga.completed_framebuffer();
+        let (width, height) = vga.completed_dimensions();
+        let height = pixels
+            .len()
+            .checked_div(width)
+            .map_or(0, |rows| rows.min(height));
+        (&pixels[..width * height], width, height)
     }
 }
 /// Every few seconds logs how fast the guest ran, so a slow session can be

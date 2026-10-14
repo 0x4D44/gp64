@@ -19,13 +19,17 @@ const RAINBOW: &[(u8, u8, u8)] = &[
     (215, 135, 255), // violet
 ];
 
-const USAGE: &str = "gp64 [--mute] [--record FILE] [--wait] [program [args]]";
+const USAGE: &str = "gp64 [--mute] [--record FILE] [--script FILE] [--wait] [program [args]]";
 const INTRO: &str = "Runs a DOS program from its own folder, or the default launcher beside gp64\nor, failing that, in the current folder.";
 const OPTIONS: &[(&str, &str)] = &[
     ("--mute", "Disable host audio output"),
     (
         "--record FILE",
         "Record native video and mixed audio to MKV/WebM",
+    ),
+    (
+        "--script FILE",
+        "Run an emuscru script, then exit; implies --wait",
     ),
     (
         "--wait",
@@ -152,6 +156,8 @@ pub enum Command {
 pub struct Options {
     pub mute: bool,
     pub record: Option<PathBuf>,
+    /// An emuscru script to run against the guest.
+    pub script: Option<PathBuf>,
     /// Stay attached to the console instead of detaching on Windows.
     pub wait: bool,
     pub program: Option<PathBuf>,
@@ -162,6 +168,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command> {
     let mut options = Options {
         mute: false,
         record: None,
+        script: None,
         wait: false,
         program: None,
         args: String::new(),
@@ -175,6 +182,10 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command> {
             Some("--record") => {
                 let value = args.next().context("--record requires a value")?;
                 options.record = Some(value.into());
+            }
+            Some("--script") => {
+                let value = args.next().context("--script requires a value")?;
+                options.script = Some(value.into());
             }
             Some("--") => {
                 if let Some(program) = args.next() {
@@ -320,6 +331,8 @@ mod tests {
             "Disable host audio output",
             "--record FILE",
             "Record native video and mixed audio to MKV/WebM",
+            "--script FILE",
+            "Run an emuscru script, then exit; implies --wait",
             "--wait",
             "Windows: keep the prompt until gp64 exits, with its messages",
             "--help",
@@ -359,6 +372,7 @@ mod tests {
             Command::Run(Options {
                 mute: true,
                 record: None,
+                script: None,
                 wait: false,
                 program: Some("dir/test.com".into()),
                 args: "\"a b\" --speed".into(),
@@ -381,6 +395,14 @@ mod tests {
         assert!(options.wait);
         assert_eq!(options.args, "--wait");
         assert!(command(&["--record"]).is_err());
+        let Command::Run(options) =
+            command(&["--script", "a.emu", "game.exe", "--script"]).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(options.script, Some("a.emu".into()));
+        assert_eq!(options.args, "--script");
+        assert!(command(&["--script"]).is_err());
         for args in [
             vec!["--speed"],
             vec!["--wat"],

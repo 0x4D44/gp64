@@ -33,11 +33,13 @@ that folder is unavailable.
 ## Options and controls
 
 ```text
-gp64 [--mute] [--record FILE] [--wait] [program [args]]
+gp64 [--mute] [--record FILE] [--script FILE] [--wait] [program [args]]
 ```
 
 - `--mute`: disable host audio output.
 - `--record FILE`: record video and audio to an MKV/WebM file, finalised on exit.
+- `--script FILE`: drive the program from an emuscru script, then exit (see
+  [Scripted runs](#scripted-runs)). Implies `--wait`.
 - `--wait`: on Windows, keep the prompt until gp64 exits and print its messages
   there. Without it, gp64 returns to the prompt once started and shows a
   failure in a message box.
@@ -61,6 +63,33 @@ raise a firewall prompt. The choices are saved for later runs.
 - Alt+Enter toggles fullscreen.
 - Click inside the window to capture the mouse; Ctrl+F10 releases it.
 - Close the window to exit.
+
+## Scripted runs
+
+`--script FILE` runs an emuscru-style script against the program, one command
+per line, with `#` comments. The whole script is checked before the program
+starts; an unknown command or bad argument is reported with its line number
+and gp64 exits with status 1. When the script ends, gp64 exits with status 0.
+A failing step, such as a `wait-stable` timeout or an unwritable screenshot,
+ends the run with status 1.
+
+- `wait N`: wait N video frames.
+- `wait-stable [N]`: wait until three frame hashes taken 10 frames apart agree;
+  fail after N frames (default 300).
+- `key NAME`: press and release a key, held for two frames (`Enter`, `Escape`,
+  `Down`, `F1`, `a`, …). `type "text"` types each character, with Shift where needed.
+- `mouse-click X Y [left|right|middle]`, `mouse-double-click`, `mouse-down X Y`,
+  `mouse-up`: X and Y are pixels of the displayed frame.
+- `screenshot [PATH]`: save the displayed frame as PNG; a relative path is
+  taken from the current folder, and `{step}` and `{frame}` are filled in.
+- `framehash`: log the CRC-32 of the displayed frame.
+- `log "text"`, `label: NAME` and `skip-to NAME` (forward only).
+- `launch`, `status`, `speed`, `perf-begin` and `perf-end` are accepted and
+  ignored; gp64's own command line chooses the program.
+
+Every step is written to the diagnostics log under `gp64::script`. Steps run
+only while the program runs, so the F12 menu pauses the script too, and the
+keyboard and mouse still work alongside it.
 
 ## Limits
 

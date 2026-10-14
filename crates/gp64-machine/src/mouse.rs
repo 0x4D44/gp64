@@ -114,6 +114,32 @@ impl Mouse {
         }
     }
 
+    /// Puts the pointer over frame pixel `(x, y)` of a `width` x `height`
+    /// frame, mapped linearly onto the current limits and clamped. The
+    /// motion counters move by the equivalent mickeys.
+    pub fn place(&mut self, x: i32, y: i32, width: usize, height: usize) {
+        if !self.enabled || width < 2 || height < 2 {
+            return;
+        }
+        for (axis, (pixel, size)) in [(x, width), (y, height)].into_iter().enumerate() {
+            let (min, max) = self.limits[axis];
+            let (min, max) = (i64::from(min), i64::from(max));
+            let span = size as i64 - 1;
+            let target = (i64::from(pixel) * (max - min) / span + min).clamp(min, max);
+            let delta = target - i64::from(self.position[axis]);
+            if delta != 0 {
+                self.pending |= 1;
+                self.cursor_dirty = true;
+            }
+            let mickeys = delta * i64::from(self.ratio[axis]) / 8;
+            self.motion[axis] = (i64::from(self.motion[axis]) + mickeys)
+                .clamp(i64::from(i16::MIN), i64::from(i16::MAX))
+                as i16;
+            self.remainder[axis] = 0;
+            self.position[axis] = target as i16;
+        }
+    }
+
     /// Buttons are numbered left=0, right=1, middle=2.
     pub fn button(&mut self, n: u8, down: bool) {
         if n >= 3 || !self.enabled {
@@ -441,6 +467,19 @@ mod tests {
         assert_eq!((cpu.regs.cx(), cpu.regs.dx()), (12, 2));
         call(&mut mouse, &mut cpu, &mut memory, 0xb);
         assert_eq!((cpu.regs.cx(), cpu.regs.dx()), (0, 0));
+    }
+
+    #[test]
+    fn placing_maps_frame_pixels_onto_limits_and_counts_mickeys() {
+        let (mut mouse, mut cpu, mut memory) = (Mouse::new(), Cpu::new(), Memory::new());
+        mouse.place(160, 100, 320, 200);
+        call(&mut mouse, &mut cpu, &mut memory, 3);
+        assert_eq!((cpu.regs.cx(), cpu.regs.dx()), (320, 100));
+        call(&mut mouse, &mut cpu, &mut memory, 0xb);
+        assert_eq!((cpu.regs.cx(), cpu.regs.dx()), (320, 200));
+        mouse.place(1000, -5, 320, 200);
+        call(&mut mouse, &mut cpu, &mut memory, 3);
+        assert_eq!((cpu.regs.cx(), cpu.regs.dx()), (639, 0));
     }
 
     #[test]

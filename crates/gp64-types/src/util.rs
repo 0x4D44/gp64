@@ -263,16 +263,33 @@ const CRC32_IEEE_TABLE: [u32; 256] = crc32_ieee_table();
 pub fn framebuffer_crc32(fb: &[u32]) -> u32 {
     let mut crc = u32::MAX;
     for &pixel in fb {
-        for byte in [
-            ((pixel >> 16) & 0xFF) as u8,
-            ((pixel >> 8) & 0xFF) as u8,
-            (pixel & 0xFF) as u8,
-        ] {
-            let index = ((crc ^ u32::from(byte)) & 0xFF) as usize;
-            crc = (crc >> 8) ^ CRC32_IEEE_TABLE[index];
-        }
+        crc = crc32_update(
+            crc,
+            &[
+                ((pixel >> 16) & 0xFF) as u8,
+                ((pixel >> 8) & 0xFF) as u8,
+                (pixel & 0xFF) as u8,
+            ],
+        );
     }
     !crc
+}
+
+/// The standard IEEE CRC-32 of `data`, as used by zlib and PNG.
+///
+/// ```
+/// assert_eq!(gp64_types::util::crc32(b"123456789"), 0xCBF4_3926);
+/// ```
+pub fn crc32(data: &[u8]) -> u32 {
+    !crc32_update(u32::MAX, data)
+}
+
+fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
+    for &byte in data {
+        let index = ((crc ^ u32::from(byte)) & 0xFF) as usize;
+        crc = (crc >> 8) ^ CRC32_IEEE_TABLE[index];
+    }
+    crc
 }
 
 // THROWAWAY-SPIKE: Gremlin determinism Step-0.

@@ -305,6 +305,11 @@ impl DosMachine {
         self.mouse.move_relative(dx, dy);
         self.mouse.refresh_cursor(&mut self.machine.memory);
     }
+    /// Puts the pointer over pixel `(x, y)` of a `width` x `height` frame.
+    pub fn mouse_place(&mut self, x: i32, y: i32, width: usize, height: usize) {
+        self.mouse.place(x, y, width, height);
+        self.mouse.refresh_cursor(&mut self.machine.memory);
+    }
     pub fn mouse_button(&mut self, n: u8, down: bool) {
         self.mouse.button(n, down);
     }

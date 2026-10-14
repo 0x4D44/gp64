@@ -14,6 +14,7 @@ mod overlay;
 mod pacing;
 mod ring;
 mod scaler;
+mod script;
 mod settings;
 mod shutdown;
 
@@ -94,8 +95,11 @@ fn run() -> Result<u8> {
         let current = std::env::current_dir().ok();
         (cli::default_folder(&beside, current.as_deref())?, None)
     };
+    // A script is parsed whole before anything starts.
+    let script = options.script.as_deref().map(script::load).transpose()?;
     // The command line and program are checked; the rest runs detached.
-    if !options.wait && detach::relaunch().context("cannot start detached")? {
+    // A script run stays attached so its caller sees how it ended.
+    if !options.wait && script.is_none() && detach::relaunch().context("cannot start detached")? {
         return Ok(0);
     }
     shutdown::install()?;
@@ -116,7 +120,7 @@ fn run() -> Result<u8> {
         serial: link::AutoLink::new("serial", saved.serial_link),
         modem: link::AutoLink::new("modem", saved.modem_link),
         guest_paused: false,
-        launch: Some((options, folder, program)),
+        launch: Some((options, folder, program, script)),
         proxy: events.create_proxy(),
         audio,
         window: None,
@@ -199,7 +203,7 @@ fn set_icons(window: &Window) {
 #[cfg(not(windows))]
 fn set_icons(_window: &Window) {}
 struct App {
-    launch: Option<(Options, PathBuf, Option<String>)>,
+    launch: Option<(Options, PathBuf, Option<String>, Option<script::Script>)>,
     proxy: winit::event_loop::EventLoopProxy<Notice>,
     audio: Option<device_audio::Output>,
     window: Option<Arc<Window>>,
@@ -538,7 +542,7 @@ impl ApplicationHandler<Notice> for App {
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?,
             );
             self.window = Some(window);
-            let (options, folder, program) =
+            let (options, folder, program, script) =
                 self.launch.take().context("missing launch parameters")?;
             let audio = self.audio.as_mut().and_then(|audio| {
                 let rate = audio.rate;
@@ -548,6 +552,7 @@ impl ApplicationHandler<Notice> for App {
                 options,
                 folder,
                 program,
+                script,
                 self.proxy.clone(),
                 audio,
             )?);
