@@ -34,6 +34,9 @@ const WORD_ALLOWLIST: &[&str] = &[
     concat!("README.md:Run Geoff Cram", "mond's original Formula", " One Grand", " Prix (F1", "GP) on Windows 11 and macOS."),
     concat!("README.md:Copy gp64 into your own F1", "GP folder and run it. It starts the normal batch launcher, or the executable if the batch file is absent."),
     concat!("README.md:No game files are included. You must own the game. gp64 is not affiliated with or endorsed by the rights holders of F1", "GP (Formula", " One Grand", " Prix)."),
+    concat!("README.md:Then use F1", "GP's own serial-link or modem setup on that COM port."),
+    concat!("README.md:In F1", "GP's link setup, choose the fastest port speed, such as 19200. That"),
+    concat!("README.md:modem's line speed (gp64's modem connects at up to 14400). F1", "GP exchanges"),
 ];
 // This exact historical line describes only the launcher defaults. The lead
 // explicitly reviewed and allowed it; other commits and edited lines still fail.

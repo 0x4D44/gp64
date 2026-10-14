@@ -49,14 +49,14 @@ For two players, run gp64 on two machines on the same local network, or twice
 on one machine. In each copy, turn on F12 → Serial for a null-modem cable on
 COM1, or F12 → Modem for a modem on COM2. The two copies find each other and
 connect by themselves; the menu row shows the other machine once connected.
-Then use the program's own serial-link or modem setup on that COM port.
+Then use F1GP's own serial-link or modem setup on that COM port.
 
-Choose the fastest port speed the program offers, such as 19200. That setting
-is the speed of the cable between the PC and its modem, not the modem's line
-speed (gp64's modem connects at up to 14400). A game that exchanges data every
-frame spends most of its time waiting on a 2400 bps cable, and plays slowly
-however fast the host is. The serial link has no modem delay, so it is the
-quickest of the two.
+In F1GP's link setup, choose the fastest port speed, such as 19200. That
+setting is the speed of the cable between the PC and its modem, not the
+modem's line speed (gp64's modem connects at up to 14400). F1GP exchanges
+data every frame, so on a 2400 bps cable it spends most of its time waiting
+and plays slowly however fast the host is. The serial link has no modem
+delay, so it is the quickest of the two.
 
 Both links are off by default, and gp64 opens no network sockets until one is
 turned on. A link then listens on a TCP port chosen by the system and
