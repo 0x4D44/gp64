@@ -331,6 +331,7 @@ impl App {
             enabled: auto.enabled,
             status,
             peer,
+            com: line.map_or(0, ModemLine::com),
         }
     }
     fn menu_values(&self) -> overlay::Values {

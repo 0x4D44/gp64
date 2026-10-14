@@ -79,6 +79,8 @@ pub struct Link {
     pub status: LineStatus,
     /// The connected peer's advertised name, when discovery knows it.
     pub peer: Option<String>,
+    /// The guest's COM port for this link, shown once connected.
+    pub com: u8,
 }
 impl Link {
     /// A call is up or being placed: the peer would notice a pause.
@@ -304,7 +306,9 @@ fn value_text(item: Item, values: &Values) -> String {
 
 /// Glyphs available for a row's value.
 const VALUE_COLS: usize = BLOCK_COLS - LABEL_COLS;
-/// OFF, or ON and what the link is doing, in one row.
+/// OFF, or ON and what the link is doing, in one row. A connected link
+/// names its peer and the COM port to pick in the program's setup; a long
+/// name is cut so the port always shows.
 fn link_text(link: &Link) -> String {
     if !link.enabled {
         return "OFF".into();
@@ -312,12 +316,17 @@ fn link_text(link: &Link) -> String {
     let state = match &link.status {
         LineStatus::Off | LineStatus::Listening(_) => "SEARCHING".into(),
         LineStatus::Connecting(_) => "CONNECTING".into(),
-        // The peer's port is ephemeral; its name or address is what matters.
-        LineStatus::Connected(peer) => link.peer.clone().unwrap_or_else(|| {
-            peer.rsplit_once(':')
-                .map_or(peer.as_str(), |(host, _)| host)
-                .to_owned()
-        }),
+        LineStatus::Connected(peer) => {
+            // The peer's port is ephemeral; its name or address is what matters.
+            let name = link.peer.clone().unwrap_or_else(|| {
+                peer.rsplit_once(':')
+                    .map_or(peer.as_str(), |(host, _)| host)
+                    .to_owned()
+            });
+            let port = format!(" (COM{})", link.com);
+            let room = VALUE_COLS - "ON - ".len() - port.len();
+            return format!("ON - {}{port}", ascii_uppercase(&name, room));
+        }
         LineStatus::Failed(reason) => format!("FAILED: {reason}"),
     };
     ascii_uppercase(&format!("ON - {state}"), VALUE_COLS)
@@ -488,6 +497,7 @@ mod tests {
             enabled,
             status,
             peer: None,
+            com: 1,
         }
     }
     /// Window sizes from tiny to large, in both orientations.
@@ -604,6 +614,7 @@ mod tests {
             enabled: true,
             status: LineStatus::Connected("[2001:db8::1234:5678:9abc:def0]:23456".into()),
             peer: (!peer.is_empty()).then(|| peer.to_owned()),
+            com: 2,
         };
         let v = Values {
             mute_locked: true,
@@ -644,13 +655,20 @@ mod tests {
         );
         assert_eq!(
             link_text(&link(true, LineStatus::Connected("10.0.0.2:4000".into()))),
-            "ON - 10.0.0.2"
+            "ON - 10.0.0.2 (COM1)"
         );
         let named = Link {
             peer: Some("desk".into()),
+            com: 2,
             ..link(true, LineStatus::Connected("10.0.0.2:4000".into()))
         };
-        assert_eq!(link_text(&named), "ON - DESK");
+        assert_eq!(link_text(&named), "ON - DESK (COM2)");
+        // A long name gives way so the port always shows.
+        let long = Link {
+            peer: Some("a-very-long-workstation-name".into()),
+            ..named
+        };
+        assert_eq!(link_text(&long), "ON - A-VERY-LONG (COM2)");
         assert_eq!(
             link_text(&link(true, LineStatus::Failed("refused".into()))),
             "ON - FAILED: REFUSED"
