@@ -109,6 +109,7 @@ impl Emulation {
                         dos.machine.cycle(),
                     );
                     let mut busy = Duration::ZERO;
+                    let mut speed = SpeedLog::new(Duration::ZERO, dos.machine.cycle());
                     let mut mixer = audio.as_ref().map(|(rate, _)| Mixer::new(*rate));
                     let mut mixed = Vec::new();
                     let mut completed = dos.machine.completed_frames();
@@ -174,7 +175,9 @@ impl Emulation {
                             pushed: producer.pushed(),
                             started: producer.started(),
                         });
-                        let budget = pacing.budget(now, std::mem::take(&mut busy), cycle, fill);
+                        let spent = std::mem::take(&mut busy);
+                        speed.sample(now, spent, cycle, pacing.rate(), pacing.paused());
+                        let budget = pacing.budget(now, spent, cycle, fill);
                         if pacing.rate() != dos.machine.cycles_per_second() {
                             recording.retime(cycle, pacing.rate());
                             dos.machine.set_cycles_per_second(pacing.rate());
@@ -271,6 +274,41 @@ impl Emulation {
                 .map_err(|_| "emulation thread panicked".to_string())??;
         }
         Ok(())
+    }
+}
+/// Every few seconds logs how fast the guest ran, so a slow session can be
+/// told apart from a stalled guest after the fact.
+struct SpeedLog {
+    since: Duration,
+    cycle: u64,
+    busy: Duration,
+}
+impl SpeedLog {
+    const PERIOD: Duration = Duration::from_secs(5);
+    fn new(now: Duration, cycle: u64) -> Self {
+        Self {
+            since: now,
+            cycle,
+            busy: Duration::ZERO,
+        }
+    }
+    fn sample(&mut self, now: Duration, busy: Duration, cycle: u64, rate: u64, paused: bool) {
+        self.busy += busy;
+        let elapsed = now.saturating_sub(self.since);
+        if elapsed < Self::PERIOD {
+            return;
+        }
+        if !paused {
+            let seconds = elapsed.as_secs_f64();
+            tracing::info!(
+                target: "gp64::speed",
+                "guest {:.1} MHz of {:.1} MHz, host busy {:.0}%",
+                cycle.saturating_sub(self.cycle) as f64 / seconds / 1e6,
+                rate as f64 / 1e6,
+                self.busy.as_secs_f64() / seconds * 100.0,
+            );
+        }
+        *self = Self::new(now, cycle);
     }
 }
 fn check_launch_recording(recording: &Recording) -> Result<(), String> {
