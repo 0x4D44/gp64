@@ -8,6 +8,7 @@ mod discovery;
 mod emulation;
 mod input;
 mod link;
+mod logging;
 mod output;
 mod overlay;
 mod pacing;
@@ -98,6 +99,7 @@ fn run() -> Result<u8> {
         return Ok(0);
     }
     shutdown::install()?;
+    logging::install();
     let saved = settings::load();
     let events = EventLoop::<Notice>::with_user_event().build()?;
     // `--mute` opens no device at all; a saved mute opens it silenced so
@@ -111,8 +113,8 @@ fn run() -> Result<u8> {
         menu: overlay::Menu::default(),
         // No socket opens until a link is enabled.
         discovery: discovery::Discovery::new(),
-        serial: link::AutoLink::new(saved.serial_link),
-        modem: link::AutoLink::new(saved.modem_link),
+        serial: link::AutoLink::new("serial", saved.serial_link),
+        modem: link::AutoLink::new("modem", saved.modem_link),
         guest_paused: false,
         launch: Some((options, folder, program)),
         proxy: events.create_proxy(),
@@ -381,7 +383,7 @@ impl App {
                 }
             };
             if let Err(error) = result {
-                eprintln!("gp64: {name} link: {error}");
+                tracing::warn!(target: "gp64::link", "{name} link: {error}");
             }
         }
         let listening = |line: &ModemLine| match line.status() {

@@ -80,6 +80,13 @@ compilation, gamepads, emulator netplay and save states are outside this version
 Menu preferences persist in the user's configuration folder. Only a host folder
 can be mounted, not disk or ISO images.
 
+A diagnostics log is kept as `gp64.log` in the user's local data folder
+(`%LOCALAPPDATA%\gp64` on Windows, `~/Library/Application Support/gp64` on
+macOS). It records serial and modem link changes and the modem's AT commands
+and results. Once it reaches 4 MB it becomes `gp64.old.log` and a new log
+starts, so the pair stays small. `RUST_LOG` (for example
+`RUST_LOG=gp64::hw::serial=debug`) changes how much it records.
+
 ## Build from source
 
 Install a current stable Rust toolchain and the platform's native C/linker tools.

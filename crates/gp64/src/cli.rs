@@ -55,6 +55,7 @@ const NOTES: &[&str] = &[
     "CPU speed adjusts automatically to host capacity; timers and audio keep normal time.",
     "Serial (COM1) and modem (COM2) links find another gp64 on the LAN by themselves.",
     "Menu choices are saved per user; command-line options win for that run.",
+    "A diagnostics log, gp64.log, is kept in the per-user data folder; RUST_LOG sets its detail.",
 ];
 
 /// Whether stdout is a terminal and color has not been explicitly disabled.
@@ -341,6 +342,7 @@ mod tests {
             "CPU speed adjusts automatically to host capacity; timers and audio keep normal time.",
             "Serial (COM1) and modem (COM2) links find another gp64 on the LAN by themselves.",
             "Menu choices are saved per user; command-line options win for that run.",
+            "A diagnostics log, gp64.log, is kept in the per-user data folder; RUST_LOG sets its detail.",
         ] {
             assert!(text.contains(expected), "help is missing {expected:?}");
         }

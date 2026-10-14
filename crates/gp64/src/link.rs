@@ -24,13 +24,16 @@ pub enum Step {
 
 #[derive(Debug, Default)]
 pub struct AutoLink {
+    /// Names the link in the log.
+    name: &'static str,
     pub enabled: bool,
     last: LineStatus,
     retry_at: Option<Instant>,
 }
 impl AutoLink {
-    pub fn new(enabled: bool) -> Self {
+    pub fn new(name: &'static str, enabled: bool) -> Self {
         Self {
+            name,
             enabled,
             ..Self::default()
         }
@@ -50,6 +53,9 @@ impl AutoLink {
             matches!(status, LineStatus::Failed(_)) && !matches!(self.last, LineStatus::Failed(_));
         if dropped || failed {
             self.retry_at = Some(now + RETRY);
+        }
+        if *status != self.last {
+            tracing::info!(target: "gp64::link", "{} link: {status}", self.name);
         }
         self.last = status.clone();
         if !self.enabled {
@@ -95,7 +101,7 @@ mod tests {
         ];
         let lines = modems.each_ref().map(TcpModem::line);
         let ids = [3, 9];
-        let mut links = [AutoLink::new(true), AutoLink::new(true)];
+        let mut links = [AutoLink::new("test", true), AutoLink::new("test", true)];
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut calls = 0;
         while !lines
@@ -137,7 +143,7 @@ mod tests {
     #[test]
     fn a_disabled_link_hangs_up_anything_active_and_otherwise_rests() {
         let now = Instant::now();
-        let mut link = AutoLink::new(false);
+        let mut link = AutoLink::new("test", false);
         for status in [
             LineStatus::Listening(5),
             LineStatus::Connecting("h:1".into()),
@@ -153,7 +159,7 @@ mod tests {
     #[test]
     fn an_enabled_link_listens_then_the_higher_id_calls() {
         let now = Instant::now();
-        let mut link = AutoLink::new(true);
+        let mut link = AutoLink::new("test", true);
         assert_eq!(
             link.step(&LineStatus::Off, 5, std::iter::empty(), now),
             Step::Listen
@@ -182,7 +188,7 @@ mod tests {
     #[test]
     fn a_failure_or_a_dropped_call_waits_before_retrying() {
         let now = Instant::now();
-        let mut link = AutoLink::new(true);
+        let mut link = AutoLink::new("test", true);
         let failed = LineStatus::Failed("refused".into());
         assert_eq!(link.step(&failed, 5, std::iter::empty(), now), Step::None);
         assert_eq!(

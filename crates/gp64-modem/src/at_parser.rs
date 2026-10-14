@@ -436,6 +436,7 @@ impl AtParser {
         if command.is_empty() {
             return Vec::new();
         }
+        tracing::info!(target: "gp64::hw::serial", "ModemDsp command: {command}");
 
         // Must start with "AT" (case-insensitive, but we uppercased on input)
         if !command.starts_with("AT") {

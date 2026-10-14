@@ -770,6 +770,8 @@ dependencies = [
  "serde",
  "serde_json",
  "softbuffer",
+ "tracing",
+ "tracing-subscriber",
  "winit",
 ]
 
