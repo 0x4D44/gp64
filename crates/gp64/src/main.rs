@@ -1,5 +1,6 @@
 mod audio;
 mod cli;
+mod cpu;
 mod crt;
 mod detach;
 mod device_audio;
@@ -131,6 +132,9 @@ fn run() -> Result<u8> {
         program: String::new(),
         hint_until: None,
         message: None,
+        cpu: cpu::Meter::new(),
+        usage: None,
+        next_usage: Instant::now(),
         opened: Instant::now(),
         next_redraw: Instant::now(),
         result: Ok(0),
@@ -172,6 +176,10 @@ struct App {
     hint_until: Option<Instant>,
     /// A recording result shown in the title until the given time.
     message: Option<(String, Instant)>,
+    cpu: cpu::Meter,
+    /// This process's CPU usage, shown after the program name.
+    usage: Option<u32>,
+    next_usage: Instant,
     /// Drives the REC indicator's pulse.
     opened: Instant,
     next_redraw: Instant,
@@ -190,6 +198,9 @@ impl App {
             } else {
                 format!("gp64 - {}", self.program)
             };
+            if let Some(usage) = self.usage {
+                title.push_str(&format!(" - CPU {usage}%"));
+            }
             if self.hint_until.is_some() {
                 title.push_str(" - ");
                 title.push_str(SOUND_HINT);
@@ -620,6 +631,14 @@ impl ApplicationHandler<Notice> for App {
         {
             self.message = None;
             self.title();
+        }
+        if now >= self.next_usage {
+            let usage = self.cpu.sample(now);
+            self.next_usage = now + cpu::INTERVAL;
+            if usage != self.usage {
+                self.usage = usage;
+                self.title();
+            }
         }
         if now >= self.next_redraw {
             if let Some(window) = &self.window {
