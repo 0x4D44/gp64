@@ -48,9 +48,22 @@ const COMMIT_WORD_ALLOWLIST: &[&str] = &[
     concat!("commit/79693562fce87bac08046e9b84ca3b4fbaba3241:interpreter run. ", "F1", "GP", "'s screen code makes far calls in a hot loop, and"),
 ];
 // The application icon master is generated artwork Arthur chose; the sized
-// icons are shrunk from it.
+// icons are shrunk from it. The README screenshots show the game running in
+// gp64; they hold its artwork, and Arthur chose to commit them (2026-10-14).
 const BINARY_ALLOWLIST: &[(&str, &str)] = &[
     ("crates/gp64/assets/icon.png", "crates/gp64/assets/icon.png"),
+    (
+        "docs/screenshots/modem-link.png",
+        "docs/screenshots/modem-link.png",
+    ),
+    (
+        "docs/screenshots/race-start.png",
+        "docs/screenshots/race-start.png",
+    ),
+    (
+        "docs/screenshots/fastest-lap.png",
+        "docs/screenshots/fastest-lap.png",
+    ),
     (
         "crates/gp64/assets/icon-16.png",
         "crates/gp64/assets/icon.png",

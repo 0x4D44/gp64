@@ -14,6 +14,24 @@ This is a personal project with irregular maintenance. Contributions and pull
 requests are not accepted; forks are welcome under GPL-3.0-or-later. There is no
 promise of support, fixes or future releases. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Screenshots
+
+Two copies of gp64 on one PC, linked by their emulated modems: one dials while
+the other waits for the call.
+
+![Two gp64 windows: one dialling, one waiting for the call](docs/screenshots/modem-link.png)
+
+The race start, seen from both linked copies.
+
+![Two gp64 windows on the starting grid](docs/screenshots/race-start.png)
+
+A fastest-lap message arriving on both copies at once.
+
+![Two gp64 windows showing the same fastest-lap message](docs/screenshots/fastest-lap.png)
+
+The screenshots show the game's own artwork, which belongs to its rights
+holders and is not covered by gp64's licence.
+
 ## Drop-in launch
 
 Copy gp64 into your own F1GP folder and run it. It starts the normal batch launcher, or the executable if the batch file is absent.
