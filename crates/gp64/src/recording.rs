@@ -104,9 +104,11 @@ impl Recorder {
                 / u128::from(segment.rate)) as u64,
         )
     }
-    fn stop_live(&mut self, machine: &mut Machine) {
+    fn stop_live(&mut self, machine: &mut Machine, reason: &str) {
         if !self.stopped {
-            eprintln!("gp64: recording stopped: encoder cannot keep up or has failed; finalising queued data");
+            // A GUI launch has no console, so the log is where this is seen.
+            tracing::warn!(target: "gp64::recording", "recording stopped early: {reason}");
+            eprintln!("gp64: recording stopped: {reason}; finalising queued data");
             self.stopped = true;
             machine.enable_frame_capture(false);
             if let Some(session) = &self.session {
@@ -142,7 +144,7 @@ impl Recorder {
                 });
             } else {
                 if self.pending_audio.len() > SAMPLE_RATE as usize * 5 {
-                    self.stop_live(machine);
+                    self.stop_live(machine, "no video frame within five seconds");
                 }
                 return Ok(());
             }
@@ -166,13 +168,13 @@ impl Recorder {
                 timestamp_ns: self.timestamp(frame.cycle),
             })
             .collect();
-        if !self.session.as_ref().unwrap().try_submit_slice(
+        if let Err(refusal) = self.session.as_ref().unwrap().submit_slice(
             &frames,
             &stereo,
             timestamp,
             self.timestamp(machine.cycle()),
         ) {
-            self.stop_live(machine);
+            self.stop_live(machine, &format!("the encoder refused a slice: {refusal}"));
         }
         Ok(())
     }

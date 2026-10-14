@@ -98,6 +98,68 @@ impl From<std::io::Error> for CaptureError {
     }
 }
 
+/// Why [`CaptureSession::submit_slice`] refused a slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SliceRefusal {
+    /// More frames than the session's frame budget.
+    TooManyFrames { frames: usize, capacity: usize },
+    /// Over five seconds of stereo PCM, or an odd sample count.
+    BadAudioLength { samples: usize },
+    /// Frames out of timestamp order, or one after the slice end.
+    FrameOutOfOrder {
+        first_ns: u64,
+        last_ns: u64,
+        end_ns: u64,
+    },
+    /// PCM starting after the slice end, or lasting over a second past it.
+    AudioOutsideSlice {
+        samples: usize,
+        timestamp_ns: u64,
+        end_ns: u64,
+    },
+    /// The session was asked to stop.
+    Stopped,
+    /// The encoder thread has ended.
+    EncoderEnded,
+    /// The encoder is behind: no room for the slice's frames.
+    VideoQueueFull,
+    /// The encoder is behind: no room for the slice's audio.
+    AudioQueueFull,
+}
+
+impl std::fmt::Display for SliceRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooManyFrames { frames, capacity } => {
+                write!(f, "{frames} frames in one slice, over the {capacity}-frame budget")
+            }
+            Self::BadAudioLength { samples } => {
+                write!(f, "{samples} audio samples in one slice is not a valid length")
+            }
+            Self::FrameOutOfOrder {
+                first_ns,
+                last_ns,
+                end_ns,
+            } => write!(
+                f,
+                "frame times {first_ns}..{last_ns} ns are out of order or past the slice end {end_ns} ns"
+            ),
+            Self::AudioOutsideSlice {
+                samples,
+                timestamp_ns,
+                end_ns,
+            } => write!(
+                f,
+                "{samples} audio samples from {timestamp_ns} ns do not fit a slice ending at {end_ns} ns"
+            ),
+            Self::Stopped => write!(f, "the recording was asked to stop"),
+            Self::EncoderEnded => write!(f, "the encoder has ended"),
+            Self::VideoQueueFull => write!(f, "the encoder is behind: video queue full"),
+            Self::AudioQueueFull => write!(f, "the encoder is behind: audio queue full"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Messages between emulator thread and encoder thread
 // ---------------------------------------------------------------------------
@@ -626,32 +688,69 @@ impl CaptureSession {
         timestamp_ns: u64,
         end_ns: u64,
     ) -> bool {
-        if frames.len() > self.video_capacity
-            || samples.len() > self.sample_rate as usize * 2 * 5
-            || !samples.len().is_multiple_of(2)
-            || frames
-                .windows(2)
-                .any(|pair| pair[0].timestamp_ns > pair[1].timestamp_ns)
+        self.submit_slice(frames, samples, timestamp_ns, end_ns)
+            .is_ok()
+    }
+
+    /// [`try_submit_slice`](Self::try_submit_slice), saying why a slice was
+    /// refused, so a live caller that must stop can log the cause.
+    pub fn submit_slice(
+        &self,
+        frames: &[CaptureFrame<'_>],
+        samples: &[f32],
+        timestamp_ns: u64,
+        end_ns: u64,
+    ) -> Result<(), SliceRefusal> {
+        if frames.len() > self.video_capacity {
+            return Err(SliceRefusal::TooManyFrames {
+                frames: frames.len(),
+                capacity: self.video_capacity,
+            });
+        }
+        if samples.len() > self.sample_rate as usize * 2 * 5 || !samples.len().is_multiple_of(2) {
+            return Err(SliceRefusal::BadAudioLength {
+                samples: samples.len(),
+            });
+        }
+        if frames
+            .windows(2)
+            .any(|pair| pair[0].timestamp_ns > pair[1].timestamp_ns)
             || frames.iter().any(|frame| frame.timestamp_ns > end_ns)
-            || (!samples.is_empty()
-                && (timestamp_ns > end_ns
-                    || (samples.len() as u128 / 2 - 1) * 1_000_000_000
-                        > u128::from(end_ns - timestamp_ns) * u128::from(self.sample_rate)
-                            + 1_000_000_000))
-            || self.session_over()
         {
-            return false;
+            return Err(SliceRefusal::FrameOutOfOrder {
+                first_ns: frames.first().map_or(0, |frame| frame.timestamp_ns),
+                last_ns: frames.last().map_or(0, |frame| frame.timestamp_ns),
+                end_ns,
+            });
+        }
+        if !samples.is_empty()
+            && (timestamp_ns > end_ns
+                || (samples.len() as u128 / 2 - 1) * 1_000_000_000
+                    > u128::from(end_ns - timestamp_ns) * u128::from(self.sample_rate)
+                        + 1_000_000_000)
+        {
+            return Err(SliceRefusal::AudioOutsideSlice {
+                samples: samples.len(),
+                timestamp_ns,
+                end_ns,
+            });
+        }
+        if self.stop_handle.stop_requested.load(Ordering::Acquire) {
+            return Err(SliceRefusal::Stopped);
+        }
+        if self.session_over() {
+            return Err(SliceRefusal::EncoderEnded);
         }
         // Even an empty slice advances the final displayed frame's endpoint.
         let video_slots = frames.len();
         let audio_slots = usize::from(!samples.is_empty());
         if !claim_queue_slots(&self.queue_depth.video, self.video_capacity, video_slots) {
-            return false;
+            return Err(SliceRefusal::VideoQueueFull);
         }
         if !claim_queue_slots(&self.queue_depth.audio, AUDIO_QUEUE_CAPACITY, audio_slots) {
             self.queue_depth
                 .release_many(&self.queue_depth.video, video_slots);
-            return false;
+            return Err(SliceRefusal::AudioQueueFull);
         }
         let events = slice_events(frames, samples, timestamp_ns, self.sample_rate);
         if self.video_tx.as_ref().is_some_and(|tx| {
@@ -663,13 +762,13 @@ impl CaptureSession {
             }))
             .is_ok()
         }) {
-            true
+            Ok(())
         } else {
             self.queue_depth
                 .release_many(&self.queue_depth.video, video_slots);
             self.queue_depth
                 .release_many(&self.queue_depth.audio, audio_slots);
-            false
+            Err(SliceRefusal::EncoderEnded)
         }
     }
 
@@ -1679,28 +1778,107 @@ mod tests {
             at += len + n + size;
         }
     }
+    // Hold the receiver unread: a deterministic encoder stall, with no
+    // scheduling assumptions and only one source frame per PCM message.
+    fn stalled_session() -> (CaptureSession, Receiver<EncoderMessage>) {
+        let (tx, rx) = mpsc::sync_channel(64 + AUDIO_QUEUE_CAPACITY);
+        let session = CaptureSession {
+            video_tx: Some(tx),
+            audio_tx: None,
+            sample_rate: 48_000,
+            thread: None,
+            elapsed_ns: Arc::new(AtomicU64::new(0)),
+            video_capacity: 64,
+            stop_handle: CaptureStopHandle {
+                stop_requested: Arc::new(AtomicBool::new(false)),
+                finished: Arc::new(AtomicBool::new(false)),
+            },
+            queue_depth: QueueDepth::new(),
+            encoder_loss_reported: AtomicBool::new(false),
+        };
+        (session, rx)
+    }
+    #[test]
+    fn submit_slice_says_why_it_refused() {
+        let frame = |timestamp_ns| CaptureFrame {
+            pixels: &[0],
+            width: 1,
+            height: 1,
+            timestamp_ns,
+        };
+        let (session, _rx) = stalled_session();
+        let many: Vec<_> = (0..65).map(|_| frame(0)).collect();
+        assert_eq!(
+            session.submit_slice(&many, &[], 0, 0),
+            Err(SliceRefusal::TooManyFrames {
+                frames: 65,
+                capacity: 64
+            })
+        );
+        assert_eq!(
+            session.submit_slice(&[], &[0.0], 0, 0),
+            Err(SliceRefusal::BadAudioLength { samples: 1 })
+        );
+        assert_eq!(
+            session.submit_slice(&[frame(20), frame(10)], &[], 0, 30),
+            Err(SliceRefusal::FrameOutOfOrder {
+                first_ns: 20,
+                last_ns: 10,
+                end_ns: 30
+            })
+        );
+        assert_eq!(
+            session.submit_slice(&[frame(40)], &[], 0, 30),
+            Err(SliceRefusal::FrameOutOfOrder {
+                first_ns: 40,
+                last_ns: 40,
+                end_ns: 30
+            })
+        );
+        assert_eq!(
+            session.submit_slice(&[], &[0.0, 0.0], 50, 30),
+            Err(SliceRefusal::AudioOutsideSlice {
+                samples: 2,
+                timestamp_ns: 50,
+                end_ns: 30
+            })
+        );
+        // Two seconds of 48 kHz audio in a zero-length slice.
+        let long = vec![0.0; 2 * 96_000];
+        assert_eq!(
+            session.submit_slice(&[], &long, 0, 0),
+            Err(SliceRefusal::AudioOutsideSlice {
+                samples: long.len(),
+                timestamp_ns: 0,
+                end_ns: 0
+            })
+        );
+        let some: Vec<_> = (0..40).map(|_| frame(0)).collect();
+        assert_eq!(session.submit_slice(&some, &[], 0, 0), Ok(()));
+        assert_eq!(
+            session.submit_slice(&some, &[], 0, 0),
+            Err(SliceRefusal::VideoQueueFull)
+        );
+        for _ in 0..AUDIO_QUEUE_CAPACITY {
+            assert_eq!(session.submit_slice(&[], &[0.0, 0.0], 0, 0), Ok(()));
+        }
+        assert_eq!(
+            session.submit_slice(&[], &[0.0, 0.0], 0, 0),
+            Err(SliceRefusal::AudioQueueFull)
+        );
+        session.stop_handle.finished.store(true, Ordering::Release);
+        assert_eq!(
+            session.submit_slice(&[], &[], 0, 0),
+            Err(SliceRefusal::EncoderEnded)
+        );
+        session.stop_handle.request_stop();
+        assert_eq!(
+            session.submit_slice(&[], &[], 0, 0),
+            Err(SliceRefusal::Stopped)
+        );
+    }
     #[test]
     fn stalled_coherent_queue_preserves_separate_frame_and_audio_budgets() {
-        // Hold the receiver unread: a deterministic encoder stall, with no
-        // scheduling assumptions and only one source frame per PCM message.
-        fn stalled_session() -> (CaptureSession, Receiver<EncoderMessage>) {
-            let (tx, rx) = mpsc::sync_channel(64 + AUDIO_QUEUE_CAPACITY);
-            let session = CaptureSession {
-                video_tx: Some(tx),
-                audio_tx: None,
-                sample_rate: 48_000,
-                thread: None,
-                elapsed_ns: Arc::new(AtomicU64::new(0)),
-                video_capacity: 64,
-                stop_handle: CaptureStopHandle {
-                    stop_requested: Arc::new(AtomicBool::new(false)),
-                    finished: Arc::new(AtomicBool::new(false)),
-                },
-                queue_depth: QueueDepth::new(),
-                encoder_loss_reported: AtomicBool::new(false),
-            };
-            (session, rx)
-        }
         let (session, _rx) = stalled_session();
         for _ in 0..AUDIO_QUEUE_CAPACITY {
             assert!(session.try_submit_slice(&[], &[0.0, 0.0], 0, 0));
