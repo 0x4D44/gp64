@@ -38,7 +38,7 @@ fn three_seconds_of_guest_video_and_tone_decode_and_finalise() {
     let frame_rate = rate as f64 / dos.machine.io.vga.timing_cycles_per_frame as f64;
     assert_eq!(recorder.finish().unwrap(), vec![path.clone()]);
     let summary = decode::read(&path);
-    assert_eq!((summary.width, summary.height), (320, 200));
+    assert_eq!((summary.width, summary.height), (640, 400));
     assert!(
         (summary.video.len() as f64 - 3.0 * frame_rate).abs() <= 1.0,
         "{} frames at {frame_rate} Hz",

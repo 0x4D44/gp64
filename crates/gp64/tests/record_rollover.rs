@@ -59,7 +59,7 @@ fn one_poll_routes_audio_to_each_completed_resolution_segment() {
             .iter()
             .map(|s| (s.width, s.height))
             .collect::<Vec<_>>(),
-        [(320, 200), (640, 350), (320, 200)]
+        [(640, 400), (640, 350), (640, 400)]
     );
     for (index, summary) in summaries.iter().enumerate() {
         assert!(!summary.audio.is_empty(), "no audio in segment {index}");

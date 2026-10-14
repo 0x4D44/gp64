@@ -39,6 +39,21 @@ fn capture_scale_factor(width: u32) -> u32 {
     }
 }
 
+/// The upscale factor for a live recording, which must encode in real time.
+///
+/// [`capture_scale_factor`]'s 4× for 320×200 encodes 16 times the pixels and
+/// fell to 45–95% of real time on 70 fps race footage, so a live recording
+/// overflowed its queue and stopped within seconds. Doubling small sources
+/// held real time with room to spare. It still gives every source pixel its
+/// own 4:2:0 chroma sample, so colour no longer bleeds between neighbours.
+fn live_scale_factor(width: u32) -> u32 {
+    if width == 0 || width >= 640 {
+        1
+    } else {
+        2
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
@@ -508,23 +523,23 @@ impl CaptureSession {
         Self::start_with_scale(config, capture_scale_factor, VIDEO_QUEUE_CAPACITY, None)
     }
 
-    /// Record native VGA dimensions, without presentation upscaling.
+    /// Record a running emulator, upscaled by [`live_scale_factor`].
     /// Budgets of 64 video frames and 4096 PCM messages absorb short stalls.
     /// Each coherent slice holds
     /// at most 64 frames and five seconds of source stereo PCM.
     /// Live callers use the nonblocking submission methods and stop on overflow.
-    pub fn start_native(config: CaptureConfig) -> Result<Self, CaptureError> {
-        Self::start_with_scale(config, |_| 1, 64, None)
+    pub fn start_live(config: CaptureConfig) -> Result<Self, CaptureError> {
+        Self::start_with_scale(config, live_scale_factor, 64, None)
     }
 
-    /// Native menu recording with an already owned base file and exclusive rollovers.
+    /// Live menu recording with an already owned base file and exclusive rollovers.
     /// The reserved path is authoritative even if the config names another file.
-    pub fn start_native_reserved(
+    pub fn start_live_reserved(
         mut config: CaptureConfig,
         output: ReservedCaptureOutput,
     ) -> Result<Self, CaptureError> {
         config.output_path = output.path.clone();
-        Self::start_with_scale(config, |_| 1, 64, Some(output))
+        Self::start_with_scale(config, live_scale_factor, 64, Some(output))
     }
 
     fn start_with_scale(
@@ -1738,7 +1753,7 @@ mod tests {
     #[test]
     fn coherent_slices_drain_audio_only_polls_before_stop() {
         let path = temp_capture_path("slice_stop");
-        let mut session = CaptureSession::start_native(CaptureConfig {
+        let mut session = CaptureSession::start_live(CaptureConfig {
             output_path: path.clone(),
             width: 64,
             height: 64,
@@ -1927,6 +1942,15 @@ mod tests {
         assert_eq!(capture_scale_factor(400), 4); // 1600
         assert_eq!(capture_scale_factor(256), 5); // 1280
         assert_eq!(capture_scale_factor(200), 7); // 1400
+    }
+
+    #[test]
+    fn live_scale_factor_doubles_only_small_sources() {
+        assert_eq!(live_scale_factor(320), 2); // 640
+        assert_eq!(live_scale_factor(360), 2); // 720
+        assert_eq!(live_scale_factor(640), 1);
+        assert_eq!(live_scale_factor(720), 1);
+        assert_eq!(live_scale_factor(0), 1);
     }
 
     #[test]

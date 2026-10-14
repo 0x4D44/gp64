@@ -200,6 +200,9 @@ assertions_on_constants = "allow"                   # defensive runtime asserts 
 duration_suboptimal_units = "allow"                 # parse-duration tests use Duration::from_secs(N) as the explicit oracle
 
 # Real-time software capture needs optimized codecs even in development builds.
+[profile.dev.package.rvp9-core]
+opt-level = 3
+
 [profile.dev.package.rvp9-encoder]
 opt-level = 3
 

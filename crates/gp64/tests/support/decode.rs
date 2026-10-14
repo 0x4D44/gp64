@@ -80,10 +80,11 @@ pub fn decode_video(summary: &Summary) -> Vec<u64> {
         .map(|(_, bytes)| {
             let packet = decoder.parse_packet(bytes).unwrap();
             let frame = decoder.decode_frame(&packet.frames()[0]).unwrap();
-            assert!(frame.y_plane().width() >= 320);
-            assert_eq!(frame.y_plane().height(), 200);
-            (0..200)
-                .flat_map(|y| frame.y_plane().row(y)[..320].to_vec())
+            let (width, height) = (summary.width as usize, summary.height as usize);
+            assert!(frame.y_plane().width() >= width);
+            assert_eq!(frame.y_plane().height(), height);
+            (0..height)
+                .flat_map(|y| frame.y_plane().row(y)[..width].to_vec())
                 .map(u64::from)
                 .sum()
         })

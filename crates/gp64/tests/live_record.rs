@@ -31,7 +31,7 @@ fn run(dos: &mut DosMachine, recording: &mut Recording, ms: u64) {
 
 fn check(path: &Path, frame_rate: f64) {
     let summary = decode::read(path);
-    assert_eq!((summary.width, summary.height), (320, 200));
+    assert_eq!((summary.width, summary.height), (640, 400));
     // Time starts at the recording's own start, not the guest's.
     assert!(
         summary.video[0].0 < 50,

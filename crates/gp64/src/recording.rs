@@ -136,9 +136,9 @@ impl Recorder {
                     channels: 2,
                 };
                 self.session = Some(if let Some(output) = self.reserved.take() {
-                    CaptureSession::start_native_reserved(config, output)?
+                    CaptureSession::start_live_reserved(config, output)?
                 } else {
-                    CaptureSession::start_native(config)?
+                    CaptureSession::start_live(config)?
                 });
             } else {
                 if self.pending_audio.len() > SAMPLE_RATE as usize * 5 {
@@ -582,7 +582,7 @@ mod tests {
         let dir = scratch("sample-instant");
         let mut machine = Machine::with_rate(20_000_000);
         let mut recorder = Recorder::new(dir.join("capture.mkv"), &mut machine);
-        let session = CaptureSession::start_native(CaptureConfig {
+        let session = CaptureSession::start_live(CaptureConfig {
             output_path: recorder.path.clone(),
             width: 320,
             height: 200,

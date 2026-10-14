@@ -19,7 +19,7 @@ fn config(path: PathBuf) -> CaptureConfig {
 }
 fn start_menu(path: PathBuf) -> CaptureSession {
     let output = ReservedCaptureOutput::reserve(&path, None).unwrap();
-    CaptureSession::start_native_reserved(config(path), output).unwrap()
+    CaptureSession::start_live_reserved(config(path), output).unwrap()
 }
 fn assert_video(path: &std::path::Path) {
     let bytes = fs::read(path).unwrap();
@@ -58,7 +58,7 @@ fn explicit_cli_output_keeps_overwrite_policy() {
     let dir = fixture("cli");
     let base = dir.join("explicit.mkv");
     fs::write(&base, b"CLI replacement sentinel").unwrap();
-    let mut session = CaptureSession::start_native(config(base.clone())).unwrap();
+    let mut session = CaptureSession::start_live(config(base.clone())).unwrap();
     session.submit_frame(&vec![0x2040; 64 * 64], 64, 64, 0);
     let paths = session.stop().unwrap();
     let bytes = fs::read(&base).unwrap();
@@ -88,8 +88,7 @@ fn reserved_handle_survives_first_geometry_mismatch_and_path_replacement() {
     // Renaming the reserved inode and replacing its old path detects reopening.
     fs::rename(&base, &held).unwrap();
     fs::write(&base, b"replacement sentinel").unwrap();
-    let mut session =
-        CaptureSession::start_native_reserved(config(unused.clone()), output).unwrap();
+    let mut session = CaptureSession::start_live_reserved(config(unused.clone()), output).unwrap();
     session.submit_frame(&vec![0x2040; 128 * 64], 128, 64, 0);
     session.submit_frame(&vec![0x4020; 192 * 64], 192, 64, 33_000_000);
     let paths = session.stop().unwrap();
@@ -133,7 +132,7 @@ fn menu_rollover_skips_missing_explicit_launch_path() {
     let base = dir.join("TONE.mkv");
     let launch = dir.join("TONE-2.mkv");
     let output = ReservedCaptureOutput::reserve(&base, Some(&launch)).unwrap();
-    let mut session = CaptureSession::start_native_reserved(config(base.clone()), output).unwrap();
+    let mut session = CaptureSession::start_live_reserved(config(base.clone()), output).unwrap();
     session.submit_frame(&vec![0x2040; 64 * 64], 64, 64, 0);
     session.submit_frame(&vec![0x4020; 128 * 64], 128, 64, 33_000_000);
     let paths = session.stop().unwrap();

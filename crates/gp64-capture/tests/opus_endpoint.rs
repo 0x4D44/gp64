@@ -131,7 +131,7 @@ fn check_recordings(inputs: &[usize], check_length: bool) {
             };
             samples.extend_from_slice(&[value, value]);
         }
-        let mut session = CaptureSession::start_native(CaptureConfig {
+        let mut session = CaptureSession::start_live(CaptureConfig {
             output_path: path.clone(),
             width: 64,
             height: 64,
