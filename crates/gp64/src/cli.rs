@@ -20,7 +20,7 @@ const RAINBOW: &[(u8, u8, u8)] = &[
 ];
 
 const USAGE: &str =
-    "gp64 [--mute] [--record FILE] [--host PORT | --join HOST:PORT] [--com 1|2] [program [args]]";
+    "gp64 [--mute] [--record FILE] [--host PORT | --join HOST:PORT] [--com 1|2] [--wait] [program [args]]";
 const INTRO: &str = "Runs a DOS program from its own folder, or the default launcher beside gp64\nor, failing that, in the current folder.";
 const OPTIONS: &[(&str, &str)] = &[
     ("--mute", "Disable host audio output"),
@@ -31,6 +31,10 @@ const OPTIONS: &[(&str, &str)] = &[
     ("--host PORT", "Listen for a TCP modem connection"),
     ("--join HOST:PORT", "Connect to a TCP modem host"),
     ("--com 1|2", "Modem COM port (default 2)"),
+    (
+        "--wait",
+        "Windows: keep the prompt until gp64 exits, with its messages",
+    ),
     ("--help", "Show this help"),
     ("--version", "Show version"),
 ];
@@ -167,6 +171,8 @@ pub struct Options {
     pub com: u8,
     /// `--com` was given, so it overrides the saved COM port.
     pub com_given: bool,
+    /// Stay attached to the console instead of detaching on Windows.
+    pub wait: bool,
     pub program: Option<PathBuf>,
     pub args: String,
 }
@@ -178,6 +184,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command> {
         modem: None,
         com: 2,
         com_given: false,
+        wait: false,
         program: None,
         args: String::new(),
     };
@@ -186,6 +193,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command> {
             Some("--help" | "-h") => return Ok(Command::Help),
             Some("--version" | "-V") => return Ok(Command::Version),
             Some("--mute") => options.mute = true,
+            Some("--wait") => options.wait = true,
             Some("--com") => {
                 let value = args.next().context("--com requires 1 or 2")?;
                 options.com = match value.to_str() {
@@ -371,6 +379,8 @@ mod tests {
             "Connect to a TCP modem host",
             "--com 1|2",
             "Modem COM port (default 2)",
+            "--wait",
+            "Windows: keep the prompt until gp64 exits, with its messages",
             "--help",
             "Show this help",
             "--version",
@@ -410,6 +420,7 @@ mod tests {
                 modem: None,
                 com: 2,
                 com_given: false,
+                wait: false,
                 program: Some("dir/test.com".into()),
                 args: "\"a b\" --speed".into(),
             })
@@ -424,7 +435,12 @@ mod tests {
             panic!()
         };
         assert_eq!(options.record, Some("out.mkv".into()));
-        assert!(options.mute);
+        assert!(options.mute && !options.wait);
+        let Command::Run(options) = command(&["--wait", "game.exe", "--wait"]).unwrap() else {
+            panic!()
+        };
+        assert!(options.wait);
+        assert_eq!(options.args, "--wait");
         assert!(command(&["--record"]).is_err());
         for args in [
             vec!["--host", "0"],

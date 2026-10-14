@@ -1,6 +1,7 @@
 mod audio;
 mod cli;
 mod crt;
+mod detach;
 mod device_audio;
 mod discovery;
 mod emulation;
@@ -32,7 +33,17 @@ use winit::{
 };
 
 fn main() {
-    let code = report_result(run(), &mut std::io::stderr().lock());
+    let result = run();
+    let code = if detach::is_detached() {
+        let mut message = Vec::new();
+        let code = report_result(result, &mut message);
+        if !message.is_empty() {
+            detach::show_error(&String::from_utf8_lossy(&message));
+        }
+        code
+    } else {
+        report_result(result, &mut std::io::stderr().lock())
+    };
     std::process::exit(i32::from(code));
 }
 fn report_result(result: Result<u8>, stderr: &mut impl std::io::Write) -> u8 {
@@ -79,6 +90,10 @@ fn run() -> Result<u8> {
         let current = std::env::current_dir().ok();
         (cli::default_folder(&beside, current.as_deref())?, None)
     };
+    // The command line and program are checked; the rest runs detached.
+    if !options.wait && detach::relaunch().context("cannot start detached")? {
+        return Ok(0);
+    }
     shutdown::install()?;
     let saved = settings::load();
     saved.apply(&mut options);

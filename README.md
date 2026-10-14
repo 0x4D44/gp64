@@ -33,7 +33,7 @@ that folder is unavailable.
 
 ```text
 gp64 [--mute] [--record FILE] [--host PORT | --join HOST:PORT]
-     [--com 1|2] [program [args]]
+     [--com 1|2] [--wait] [program [args]]
 ```
 
 - `--mute`: disable host audio output.
@@ -41,6 +41,9 @@ gp64 [--mute] [--record FILE] [--host PORT | --join HOST:PORT]
 - `--host PORT`: listen for a direct TCP modem connection.
 - `--join HOST:PORT`: connect to a TCP modem host; mutually exclusive with `--host`.
 - `--com 1|2`: choose the emulated modem port; default COM2.
+- `--wait`: on Windows, keep the prompt until gp64 exits and print its messages
+  there. Without it, gp64 returns to the prompt once started and shows a
+  failure in a message box.
 - `--help` and `--version`: print help or version.
 
 For multiplayer, start hosting from F12 → Modem → Host Port on one machine.
