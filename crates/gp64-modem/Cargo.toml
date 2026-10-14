@@ -1,0 +1,16 @@
+[package]
+name = "gp64-modem"
+version = "0.20.3"
+edition.workspace = true
+description = "Real DSP modem emulation (V.21/V.32bis) with AT command parser"
+
+license.workspace = true
+
+[dependencies]
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

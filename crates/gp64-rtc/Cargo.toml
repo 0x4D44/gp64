@@ -1,0 +1,9 @@
+[package]
+name = "gp64-rtc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MC146818-compatible RTC driven by caller epoch and guest elapsed time"
+
+[lints]
+workspace = true

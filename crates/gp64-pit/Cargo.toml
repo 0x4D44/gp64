@@ -1,0 +1,16 @@
+[package]
+name = "gp64-pit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Intel 8253/8254 timer core, independent of machine address decode and clock domain"
+
+[dependencies]
+serde.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[lints]
+workspace = true

@@ -1,0 +1,45 @@
+[package]
+name = "gp64-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memory subsystem for DOS emulation"
+
+[features]
+default = []
+# Oracle-only storage and hooks (the O3 forced-miss sweep switch) that debug
+# builds get automatically. An OPTIMISED build enables this explicitly so the
+# oracles can run on a real workload; production release/maxperf leaves them out.
+test-instrumentation = ["gp64-memory-core/test-instrumentation"]
+# Hot-path diagnostic machinery (watchpoint statics, SEL_DIAG, traced writes).
+# Compiled out of normal builds.
+emu_probes = []
+
+[dependencies]
+gp64-memory-core.workspace = true
+# The fastmem fault handler, window registry and census.
+gp64-fastmem.workspace = true
+gp64-types.workspace = true
+tracing.workspace = true
+blake3.workspace = true
+
+# Guest RAM reservation and the fastmem alias view (ram_backing.rs, fastmem.rs).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Guest RAM placeholder reservation (ram_backing.rs; Windows 10 1803+).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Memory"] }
+
+[dev-dependencies]
+# Unit tests arm the O3 sweep through the core whatever the profile.
+gp64-memory-core = { workspace = true, features = ["test-instrumentation"] }
+gp64-types = { workspace = true, features = ["test-util"] }
+criterion = { workspace = true }
+
+[[bench]]
+name = "memory_access"
+harness = false
+
+[lints]
+workspace = true

@@ -1,0 +1,210 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gp64",
+    "crates/gp64-bios",
+    "crates/gp64-capture",
+    "crates/gp64-cpu",
+    "crates/gp64-disasm",
+    "crates/gp64-dos",
+    "crates/gp64-fastmem",
+    "crates/gp64-hw",
+    "crates/gp64-hygiene",
+    "crates/gp64-interp",
+    "crates/gp64-machine",
+    "crates/gp64-memory",
+    "crates/gp64-memory-core",
+    "crates/gp64-modem",
+    "crates/gp64-opl2",
+    "crates/gp64-pic",
+    "crates/gp64-pit",
+    "crates/gp64-rtc",
+    "crates/gp64-types",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+gp64-types = { path = "crates/gp64-types" }
+gp64-memory-core = { path = "crates/gp64-memory-core" }
+gp64-memory = { path = "crates/gp64-memory" }
+gp64-fastmem = { path = "crates/gp64-fastmem" }
+gp64-cpu = { path = "crates/gp64-cpu" }
+gp64-disasm = { path = "crates/gp64-disasm" }
+gp64-hw = { path = "crates/gp64-hw" }
+gp64-pit = { path = "crates/gp64-pit" }
+gp64-pic = { path = "crates/gp64-pic" }
+gp64-rtc = { path = "crates/gp64-rtc" }
+# Decoder and Intel text oracle; encoder supplies Instruction::with* in x87
+# tests, and instruction info supplies CPUID checks in the SSE oracle.
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "encoder", "intel", "instr_info"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+anyhow = "1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bitflags = { version = "2", features = ["serde"] }
+blake3 = "1.8"
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package.gp64-modem]
+opt-level = 3
+
+[profile.dev.package.gp64-interp]
+opt-level = 2
+
+[profile.dev.package.gp64-cpu]
+opt-level = 2
+
+[profile.dev.package.gp64-memory]
+opt-level = 2
+
+[profile.dev.package.gp64-memory-core]
+opt-level = 2
+
+[profile.dev.package.gp64-fastmem]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+opt-level = 3
+debug = "line-tables-only"
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(coverage_nightly)'] }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+# Documentation
+doc_markdown = "allow"                              # hardware terms don't need backticks
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+# Naming and modules
+module_name_repetitions = "allow"
+similar_names = "allow"
+many_single_char_names = "allow"
+struct_field_names = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+
+# Formatting and style
+unreadable_literal = "allow"                        # hardware constants are clearer without separators
+uninlined_format_args = "allow"
+semicolon_if_nothing_returned = "allow"
+default_trait_access = "allow"
+manual_string_new = "allow"
+format_push_string = "allow"
+format_collect = "allow"
+inline_always = "allow"
+
+# Match and control flow
+match_same_arms = "allow"                           # hardware register arms document each case
+single_match_else = "allow"
+match_wildcard_for_single_variants = "allow"
+match_bool = "allow"
+redundant_else = "allow"
+if_not_else = "allow"
+if_then_some_else_none = "allow"
+comparison_chain = "allow"
+manual_let_else = "allow"
+manual_assert = "allow"
+manual_range_contains = "allow"
+manual_midpoint = "allow"
+manual_clamp = "allow"
+collapsible_if = "allow"
+
+# Iterators and closures
+explicit_iter_loop = "allow"
+redundant_closure_for_method_calls = "allow"
+redundant_closure = "allow"
+needless_range_loop = "allow"
+needless_continue = "allow"
+
+# Function signatures and arguments
+too_many_lines = "allow"
+too_many_arguments = "allow"
+needless_pass_by_value = "allow"
+unnecessary_wraps = "allow"
+fn_params_excessive_bools = "allow"
+trivially_copy_pass_by_ref = "allow"
+large_types_passed_by_value = "allow"
+
+# Bindings and variables
+items_after_statements = "allow"
+used_underscore_binding = "allow"
+no_effect_underscore_binding = "allow"
+unused_self = "allow"
+ignored_unit_patterns = "allow"
+wildcard_imports = "allow"
+ignore_without_reason = "allow"
+
+# Boolean and integer conversions
+bool_to_int_with_if = "allow"                       # common in hardware register manipulation
+checked_conversions = "allow"
+stable_sort_primitive = "allow"
+
+# Type casting - emulator code does extensive intentional bit manipulation
+cast_lossless = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_ptr_alignment = "allow"
+
+# Pointer and reference lints
+ptr_as_ptr = "allow"
+borrow_as_ptr = "allow"
+ref_as_ptr = "allow"
+
+# Option/Result handling
+map_unwrap_or = "allow"
+option_option = "allow"
+
+# Clone and copy
+implicit_clone = "allow"
+cloned_instead_of_copied = "allow"
+assigning_clones = "allow"
+
+# Hardware emulation patterns
+struct_excessive_bools = "allow"                    # hardware registers use many boolean flags
+large_stack_arrays = "allow"                        # lookup tables, framebuffers
+float_cmp = "allow"                                 # audio/timing code
+unnested_or_patterns = "allow"
+elidable_lifetime_names = "allow"
+range_plus_one = "allow"
+verbose_bit_mask = "allow"
+unnecessary_operation = "allow"
+unnecessary_debug_formatting = "allow"
+unchecked_time_subtraction = "allow"
+case_sensitive_file_extension_comparisons = "allow"
+needless_bitwise_bool = "allow"                     # hardware register manipulation uses intentional bitwise ops
+naive_bytecount = "allow"                           # iter().filter(b==X).count() in tests is clear; bytecount crate is overkill
+implicit_hasher = "allow"                           # internal HashMaps use default hasher; not a library surface
+
+# New-in-Rust-1.95 stylistic lints. The codebase has many intentional
+# patterns these flag; matches existing `unreadable_literal` / `verbose_bit_mask`
+# policy.
+decimal_bitwise_operands = "allow"                  # PE/resource directory entries use decimal byte offsets in bitwise composites
+identity_op = "allow"                               # array index formulas like `i * 1 * stride + offset` keep operands explicit
+assertions_on_constants = "allow"                   # defensive runtime asserts of layout invariants (address space, dialog trampoline)
+duration_suboptimal_units = "allow"                 # parse-duration tests use Duration::from_secs(N) as the explicit oracle
+
+# Real-time software capture needs optimized codecs even in development builds.
+[profile.dev.package.rvp9-encoder]
+opt-level = 3
+
+[profile.dev.package.rvp9-decoder]
+opt-level = 3
+
+[profile.dev.package.ropus]
+opt-level = 3

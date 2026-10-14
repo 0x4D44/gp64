@@ -1,0 +1,16 @@
+[package]
+name = "gp64-pic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Intel 8259A cascaded interrupt controller, independent of machine wiring"
+
+[dependencies]
+serde.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[lints]
+workspace = true

@@ -1,0 +1,70 @@
+[package]
+name = "gp64-cpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "x86 CPU emulation for DOS emulator"
+
+[dependencies]
+gp64-types.workspace = true
+iced-x86 = { workspace = true, optional = true }
+tracing.workspace = true
+serde.workspace = true
+bitflags.workspace = true
+anyhow.workspace = true
+rustc_apfloat = "0.2"
+ieee-apsqrt = "0.1"
+
+# `x87_soft` and SSE/SSE2 share these pure-Rust IEEE primitives. Keeping them
+# common prevents guest rounding from inheriting ambient host FP state.
+
+[dev-dependencies]
+gp64-memory.workspace = true
+# Self dev-dependency, so THIS crate's own tests always build with the
+# iced-typed surface present while the product build never does. The same idiom
+# the root package uses for `legacy-interp`. Without it those tests would
+# silently stop compiling in, which is a coverage loss nothing would report.
+gp64-cpu = { path = ".", features = ["iced-interop"] }
+iced-x86 = { workspace = true }
+gp64-types = { workspace = true, features = ["test-util"] }
+tracing-subscriber = { workspace = true }
+criterion = { workspace = true }
+# Snapshot JSON validation and round-trip tests.
+serde_json = { workspace = true }
+
+[features]
+test-util = []
+# The iced-typed surface of this crate, which exists ONLY to serve the legacy
+# interpreter and SSE/x87 differential oracles. Off by default, so `gp64`
+# links no third-party decoder.
+#
+# It also gates `instr_cache`, whose entries hold an `iced_x86::Instruction`.
+# That cache is read only by legacy-gated code, so a default build was
+# allocating 16,384 entries (~768 KiB) per `Cpu` and never reading them.
+#
+# Gating a field changes `Cpu`'s layout between configurations. That is safe
+# here and was checked rather than assumed: dyncore derives every `Cpu` offset
+# with `offset_of!` (239 sites), so both layouts are self-consistent, and the one
+# hardcoded offset constant in the tree describes a generated chain entry, not a
+# struct field.
+iced-interop = ["dep:iced-x86"]
+# Measurement-only x87 census counters, forwarded by the root interp-attrib
+# feature. Default builds compile the note sites to empty inline functions.
+interp-attrib = []
+# Hot-path diagnostic machinery (x87 trace gates), compiled out of normal builds.
+emu_probes = []
+
+[[bench]]
+name = "instr_cache"
+harness = false
+
+[[bench]]
+name = "decode"
+harness = false
+
+[[bench]]
+name = "x87_ops"
+harness = false
+
+[lints]
+workspace = true

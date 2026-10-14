@@ -1,0 +1,22 @@
+[package]
+name = "gp64-machine"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+[dependencies]
+anyhow.workspace = true
+gp64-dos = { path = "../gp64-dos" }
+gp64-bios = { path = "../gp64-bios" }
+gp64-cpu.workspace = true
+gp64-interp = { path = "../gp64-interp" }
+gp64-memory.workspace = true
+gp64-hw.workspace = true
+gp64-types.workspace = true
+gp64-opl2 = { path = "../gp64-opl2" }
+gp64-modem = { path = "../gp64-modem" }
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+iced-x86.workspace = true
+[lints]
+workspace = true

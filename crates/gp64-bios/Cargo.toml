@@ -1,0 +1,24 @@
+[package]
+license.workspace = true
+name = "gp64-bios"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gp64-cpu.workspace = true
+gp64-hw.workspace = true
+gp64-memory.workspace = true
+gp64-types.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+gp64-types = { workspace = true, features = ["test-util"] }
+tempfile = "3"
+tracing-subscriber = { workspace = true }
+
+[features]
+test-util = ["gp64-types/test-util"]
+
+[lints]
+workspace = true

@@ -1,0 +1,617 @@
+mod audio;
+mod cli;
+mod crt;
+mod device_audio;
+mod discovery;
+mod emulation;
+mod input;
+mod output;
+mod overlay;
+mod pacing;
+mod ring;
+mod scaler;
+mod settings;
+mod shutdown;
+
+use anyhow::{Context, Result};
+use cli::{Command, Options};
+use emulation::{Emulation, Input, Notice, SOUND_HINT};
+use gp64_machine::modem::ModemConnection;
+use std::{
+    num::NonZeroU32,
+    path::PathBuf,
+    sync::{atomic::Ordering, Arc},
+    time::{Duration, Instant},
+};
+use winit::{
+    application::ApplicationHandler,
+    event::{DeviceEvent, ElementState, MouseButton, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    keyboard::{KeyCode, ModifiersState, PhysicalKey},
+    window::{CursorGrabMode, Fullscreen, Window, WindowId},
+};
+
+fn main() {
+    let code = report_result(run(), &mut std::io::stderr().lock());
+    std::process::exit(i32::from(code));
+}
+fn report_result(result: Result<u8>, stderr: &mut impl std::io::Write) -> u8 {
+    match result {
+        Ok(code) => code,
+        Err(error) => {
+            let _ = writeln!(
+                stderr,
+                "gp64: {}",
+                format!("{error:#}").replace(['\n', '\r'], " ")
+            );
+            1
+        }
+    }
+}
+fn run() -> Result<u8> {
+    let mut options = match cli::parse(std::env::args_os().skip(1))? {
+        Command::Help => {
+            println!("{}", cli::help_text(cli::stdout_wants_color()));
+            return Ok(0);
+        }
+        Command::Version => {
+            println!("gp64 {}", env!("CARGO_PKG_VERSION"));
+            return Ok(0);
+        }
+        Command::Run(options) => options,
+    };
+    let (folder, program) = if let Some(path) = &options.program {
+        let absolute = path
+            .canonicalize()
+            .with_context(|| format!("cannot open {}", path.display()))?;
+        let folder = absolute
+            .parent()
+            .context("program has no parent folder")?
+            .to_path_buf();
+        let name = absolute
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("program name must be text")?
+            .to_owned();
+        (folder, Some(name))
+    } else {
+        let beside = cli::executable_directory(&std::env::current_exe()?)?;
+        let current = std::env::current_dir().ok();
+        (cli::default_folder(&beside, current.as_deref())?, None)
+    };
+    shutdown::install()?;
+    let saved = settings::load();
+    saved.apply(&mut options);
+    // A launch line shows in the menu for this run; it is saved only when
+    // started from the menu.
+    let (host_port, join) = match &options.modem {
+        Some(ModemConnection::Host(port)) => (*port, saved.join().unwrap_or_default().to_owned()),
+        Some(ModemConnection::Join(address)) => (
+            saved.host_port().unwrap_or(cli::DEFAULT_HOST_PORT),
+            address.clone(),
+        ),
+        None => (
+            saved.host_port().unwrap_or(cli::DEFAULT_HOST_PORT),
+            saved.join().unwrap_or_default().to_owned(),
+        ),
+    };
+    let events = EventLoop::<Notice>::with_user_event().build()?;
+    // `--mute` opens no device at all; a saved mute opens it silenced so
+    // the menu can unmute.
+    let audio = if options.mute {
+        None
+    } else {
+        Some(device_audio::Output::open(saved.mute)?)
+    };
+    let mut discovery = discovery::Discovery::new();
+    if let Err(error) = discovery.start() {
+        eprintln!("gp64: LAN discovery unavailable: {error}");
+    }
+    let mut app = App {
+        menu: overlay::Menu::default(),
+        discovery,
+        guest_paused: false,
+        com: options.com,
+        host_port,
+        join,
+        launch: Some((options, folder, program)),
+        proxy: events.create_proxy(),
+        audio,
+        window: None,
+        surface: None,
+        emulation: None,
+        keyboard: input::Keyboard::default(),
+        modifiers: ModifiersState::empty(),
+        hotkeys: input::Hotkeys::default(),
+        captured: false,
+        buttons: [false; 3],
+        motion: (0.0, 0.0),
+        scaler: saved.scaler,
+        blitter: scaler::Blitter::default(),
+        saved,
+        program: String::new(),
+        hint_until: None,
+        message: None,
+        opened: Instant::now(),
+        next_redraw: Instant::now(),
+        result: Ok(0),
+    };
+    events.run_app(&mut app)?;
+    if let Some(mut emulation) = app.emulation.take() {
+        emulation.stop().map_err(anyhow::Error::msg)?;
+    }
+    app.result.map_err(anyhow::Error::msg)
+}
+struct App {
+    launch: Option<(Options, PathBuf, Option<String>)>,
+    proxy: winit::event_loop::EventLoopProxy<Notice>,
+    audio: Option<device_audio::Output>,
+    window: Option<Arc<Window>>,
+    surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
+    emulation: Option<Emulation>,
+    keyboard: input::Keyboard,
+    modifiers: ModifiersState,
+    hotkeys: input::Hotkeys,
+    captured: bool,
+    buttons: [bool; 3],
+    motion: (f64, f64),
+    scaler: scaler::Scaler,
+    blitter: scaler::Blitter,
+    /// The persisted choices; only menu and hotkey changes update them, so
+    /// one-run command-line overrides never reach the file.
+    saved: settings::Settings,
+    menu: overlay::Menu,
+    discovery: discovery::Discovery,
+    /// The menu holds the guest still. It does so only while no phone line
+    /// is up or coming up; see [`App::sync_pause`].
+    guest_paused: bool,
+    /// The modem's COM port for this run.
+    com: u8,
+    /// The port HOST PORT listens on.
+    host_port: u16,
+    /// The address JOIN dials.
+    join: String,
+    program: String,
+    hint_until: Option<Instant>,
+    /// A recording result shown in the title until the given time.
+    message: Option<(String, Instant)>,
+    /// Drives the REC indicator's pulse.
+    opened: Instant,
+    next_redraw: Instant,
+    result: std::result::Result<u8, String>,
+}
+impl App {
+    fn send(&self, input: Input) {
+        if let Some(emulation) = &self.emulation {
+            let _ = emulation.input.send(input);
+        }
+    }
+    fn title(&self) {
+        if let Some(window) = &self.window {
+            let mut title = if self.program.is_empty() {
+                "gp64".into()
+            } else {
+                format!("gp64 - {}", self.program)
+            };
+            if self.hint_until.is_some() {
+                title.push_str(" - ");
+                title.push_str(SOUND_HINT);
+            }
+            if let Some((message, _)) = &self.message {
+                title.push_str(" - ");
+                title.push_str(message);
+            }
+            window.set_title(&title);
+        }
+    }
+    fn release_mouse(&mut self) {
+        if let Some(window) = &self.window {
+            let _ = window.set_cursor_grab(CursorGrabMode::None);
+            window.set_cursor_visible(true);
+        }
+        self.captured = false;
+        self.motion = (0.0, 0.0);
+        for button in 0..3 {
+            if self.buttons[button] {
+                self.send(Input::Button(button as u8, false));
+                self.buttons[button] = false;
+            }
+        }
+    }
+    fn capture_mouse(&mut self) {
+        if let Some(window) = &self.window {
+            let result = window
+                .set_cursor_grab(CursorGrabMode::Locked)
+                .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
+            if result.is_ok() {
+                self.captured = true;
+                window.set_cursor_visible(false);
+            }
+        }
+    }
+    fn fullscreen(&self) -> bool {
+        self.window
+            .as_ref()
+            .is_some_and(|window| window.fullscreen().is_some())
+    }
+    fn set_fullscreen(&mut self, on: bool) {
+        if let Some(window) = &self.window {
+            window.set_fullscreen(on.then_some(Fullscreen::Borderless(None)));
+        }
+        self.saved.fullscreen = on;
+        settings::save(&self.saved);
+    }
+    fn set_scaler(&mut self, scaler: scaler::Scaler) {
+        self.scaler = scaler;
+        self.saved.scaler = scaler;
+        settings::save(&self.saved);
+    }
+    /// Emulated milliseconds into the active recording, if any.
+    fn recording(&self) -> Option<u64> {
+        self.emulation
+            .as_ref()
+            .and_then(|emulation| emulation.recording.get())
+    }
+    fn modem_line(&self) -> Option<&gp64_machine::modem::ModemLine> {
+        self.emulation
+            .as_ref()
+            .and_then(|emulation| emulation.modem.get())
+    }
+    fn menu_values(&self) -> overlay::Values {
+        let muted = self.audio.as_ref().map(|audio| &audio.muted);
+        overlay::Values {
+            scaler: self.scaler,
+            fullscreen: self.fullscreen(),
+            mute: muted.is_none_or(|muted| muted.load(Ordering::Relaxed)),
+            mute_locked: muted.is_none(),
+            recording: self.recording(),
+            modem: self
+                .modem_line()
+                .map(|line| line.status())
+                .unwrap_or_default(),
+            com: self.com,
+            next_com: self.saved.com().unwrap_or(self.com),
+            host_port: self.host_port,
+            join: self.join.clone(),
+            peers: self.discovery.peers(),
+            discovery_error: self.discovery.error().map(str::to_owned),
+        }
+    }
+    /// Starts a phone line; a refusal shows in the menu's MODEM row.
+    fn start_line(&self, connection: &ModemConnection) {
+        if let Some(line) = self.modem_line() {
+            if let Err(error) = line.start(connection) {
+                eprintln!("gp64: modem: {error}");
+            }
+        }
+    }
+    /// Holds the guest while the menu is open and no phone line is up or
+    /// coming up; lines start and end while the menu is open, so this runs
+    /// after every menu change and on every frame.
+    fn sync_pause(&mut self) {
+        let pause = self.menu.is_open() && self.menu_values().pauses();
+        if pause != self.guest_paused {
+            self.guest_paused = pause;
+            self.send(Input::Pause(pause));
+        }
+    }
+    /// Releases everything the guest holds, as on focus loss, without
+    /// forgetting consumed hotkeys (the menu key's release must stay
+    /// swallowed).
+    fn release_guest_input(&mut self) {
+        for packet in self.keyboard.release_all() {
+            self.send(Input::Key(packet));
+        }
+        self.release_mouse();
+    }
+    fn toggle_menu(&mut self) {
+        if self.menu.toggle() {
+            self.release_guest_input();
+        }
+        self.sync_pause();
+    }
+    fn menu_key(&mut self, key: overlay::Key) {
+        let values = self.menu_values();
+        match self.menu.handle(key, &values) {
+            overlay::Action::None | overlay::Action::Close => {}
+            overlay::Action::Scaler(scaler) => self.set_scaler(scaler),
+            overlay::Action::Fullscreen(on) => self.set_fullscreen(on),
+            overlay::Action::Mute(on) => {
+                if let Some(audio) = &self.audio {
+                    audio.muted.store(on, Ordering::Relaxed);
+                    self.saved.mute = on;
+                    settings::save(&self.saved);
+                }
+            }
+            overlay::Action::Record(on) => self.send(Input::Record(on)),
+            overlay::Action::Com(com) => {
+                self.saved.com = Some(com);
+                settings::save(&self.saved);
+            }
+            overlay::Action::Host(port) => {
+                self.host_port = port;
+                self.saved.modem_host_port = Some(port);
+                settings::save(&self.saved);
+                self.start_line(&ModemConnection::Host(port));
+            }
+            overlay::Action::Join(address) => {
+                self.join.clone_from(&address);
+                self.saved.modem_join = Some(address.clone());
+                settings::save(&self.saved);
+                self.start_line(&ModemConnection::Join(address));
+            }
+        }
+        self.sync_pause();
+    }
+    fn draw(&mut self) -> Result<()> {
+        let values = self.menu_values();
+        let Some(window) = &self.window else {
+            return Ok(());
+        };
+        let size = window.inner_size();
+        let (Some(width), Some(height)) =
+            (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
+        else {
+            return Ok(());
+        };
+        let Some(surface) = &mut self.surface else {
+            return Ok(());
+        };
+        surface
+            .resize(width, height)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let mut buffer = surface
+            .buffer_mut()
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        buffer.fill(0);
+        if let Some(emulation) = &self.emulation {
+            // The emulator drops a presentation update if this lock is held.
+            // Drawing always uses the latest complete frame, never a partial raster.
+            if let Ok(latest) = emulation.frame.lock() {
+                if let Some(frame) = latest.as_ref() {
+                    self.blitter.blit(
+                        &frame.pixels,
+                        frame.width,
+                        frame.height,
+                        &mut buffer,
+                        size.width as usize,
+                        size.height as usize,
+                        self.scaler,
+                    );
+                }
+            }
+        }
+        // Drawn into the window buffer only, after scaling: never into the
+        // guest frame, so recordings never contain the menu.
+        self.menu.render(
+            &mut buffer,
+            size.width as usize,
+            size.height as usize,
+            &values,
+        );
+        overlay::render_recording(
+            &mut buffer,
+            size.width as usize,
+            size.height as usize,
+            values.recording,
+            self.opened.elapsed().as_millis() as u64,
+        );
+        buffer
+            .present()
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        Ok(())
+    }
+    fn fail(&mut self, events: &ActiveEventLoop, error: impl std::fmt::Display) {
+        self.result = Err(error.to_string());
+        events.exit();
+    }
+}
+impl ApplicationHandler<Notice> for App {
+    fn resumed(&mut self, events: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let result = (|| -> Result<()> {
+            let window = Arc::new(
+                events.create_window(
+                    Window::default_attributes()
+                        .with_title("gp64")
+                        .with_inner_size(winit::dpi::LogicalSize::new(960.0, 720.0))
+                        .with_fullscreen(
+                            self.saved
+                                .fullscreen
+                                .then_some(Fullscreen::Borderless(None)),
+                        ),
+                )?,
+            );
+            let context = softbuffer::Context::new(window.clone())
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            self.surface = Some(
+                softbuffer::Surface::new(&context, window.clone())
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+            );
+            self.window = Some(window);
+            let (options, folder, program) =
+                self.launch.take().context("missing launch parameters")?;
+            let audio = self.audio.as_mut().and_then(|audio| {
+                let rate = audio.rate;
+                audio.producer.take().map(|producer| (rate, producer))
+            });
+            self.emulation = Some(Emulation::start(
+                options,
+                folder,
+                program,
+                self.proxy.clone(),
+                audio,
+            )?);
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.fail(events, error);
+        }
+    }
+    fn user_event(&mut self, events: &ActiveEventLoop, notice: Notice) {
+        match notice {
+            Notice::Program(program) => {
+                self.program = program;
+                self.title();
+            }
+            Notice::SoundHint => {
+                self.hint_until = Some(Instant::now() + Duration::from_secs(10));
+                self.title();
+            }
+            Notice::Recording(message) => {
+                self.message = Some((message, Instant::now() + Duration::from_secs(10)));
+                self.title();
+            }
+            Notice::Done(result) => {
+                self.result = result;
+                events.exit();
+            }
+        }
+    }
+    fn window_event(&mut self, events: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if self.window.as_ref().is_none_or(|window| window.id() != id) {
+            return;
+        }
+        match event {
+            WindowEvent::CloseRequested => events.exit(),
+            WindowEvent::RedrawRequested => {
+                if let Err(error) = self.draw() {
+                    self.fail(events, error);
+                }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::Focused(false) => {
+                for packet in self.keyboard.release_all() {
+                    self.send(Input::Key(packet));
+                }
+                self.hotkeys.clear();
+                self.modifiers = ModifiersState::empty();
+                self.release_mouse();
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let PhysicalKey::Code(key) = event.physical_key {
+                    let down = event.state == ElementState::Pressed;
+                    let action = self.hotkeys.event(key, down, event.repeat, self.modifiers);
+                    if action == input::KeyAction::Consume {
+                        return;
+                    }
+                    if action == input::KeyAction::Hotkey {
+                        match key {
+                            KeyCode::F12 => self.toggle_menu(),
+                            KeyCode::F11 => self.set_scaler(self.scaler.cycle(true)),
+                            KeyCode::Enter => self.set_fullscreen(!self.fullscreen()),
+                            KeyCode::F10 => self.release_mouse(),
+                            _ => {}
+                        }
+                    } else if self.menu.is_open() {
+                        // While the menu is open no key reaches the guest.
+                        if down {
+                            let text = event.text.as_deref();
+                            for key in overlay::keys(key, text, self.menu.editing()) {
+                                self.menu_key(key);
+                            }
+                        }
+                    } else if let Some(packet) = self.keyboard.event(key, down) {
+                        self.send(Input::Key(packet));
+                    }
+                }
+            }
+            WindowEvent::MouseInput { .. } if self.menu.is_open() => {}
+            WindowEvent::MouseInput { state, button, .. } => {
+                let down = state == ElementState::Pressed;
+                if down && !self.captured {
+                    self.capture_mouse();
+                }
+                let index = match button {
+                    MouseButton::Left => Some(0),
+                    MouseButton::Right => Some(1),
+                    MouseButton::Middle => Some(2),
+                    _ => None,
+                };
+                if let Some(index) = index {
+                    if self.captured {
+                        self.buttons[index] = down;
+                        self.send(Input::Button(index as u8, down));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    fn device_event(
+        &mut self,
+        _events: &ActiveEventLoop,
+        _id: winit::event::DeviceId,
+        event: DeviceEvent,
+    ) {
+        if self.captured {
+            if let DeviceEvent::MouseMotion { delta } = event {
+                self.motion.0 += delta.0;
+                self.motion.1 += delta.1;
+                let dx = self.motion.0 as i32;
+                let dy = self.motion.1 as i32;
+                self.motion.0 -= f64::from(dx);
+                self.motion.1 -= f64::from(dy);
+                if dx != 0 || dy != 0 {
+                    self.send(Input::Motion(dx, dy));
+                }
+            }
+        }
+    }
+    fn about_to_wait(&mut self, events: &ActiveEventLoop) {
+        if shutdown::requested() {
+            events.exit();
+        }
+        let host_port = self.modem_line().and_then(|line| match line.status() {
+            gp64_machine::modem::LineStatus::Listening(port) => Some(port),
+            _ => None,
+        });
+        self.discovery.set_host(host_port);
+        self.discovery.tick();
+        self.menu.update_peers(&self.discovery.peers());
+        self.sync_pause();
+        let now = Instant::now();
+        if self.hint_until.is_some_and(|until| now >= until) {
+            self.hint_until = None;
+            self.title();
+        }
+        if self
+            .message
+            .as_ref()
+            .is_some_and(|(_, until)| now >= *until)
+        {
+            self.message = None;
+            self.title();
+        }
+        if now >= self.next_redraw {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+            self.next_redraw = now + Duration::from_millis(16);
+        }
+        events.set_control_flow(ControlFlow::WaitUntil(self.next_redraw));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shutdown_error_is_reported_with_failure_exit() {
+        let mut stderr = Vec::new();
+        assert_eq!(
+            report_result(
+                Err(anyhow::anyhow!("encoder finalisation failed")),
+                &mut stderr
+            ),
+            1
+        );
+        assert_eq!(
+            String::from_utf8(stderr).unwrap(),
+            "gp64: encoder finalisation failed\n"
+        );
+    }
+}

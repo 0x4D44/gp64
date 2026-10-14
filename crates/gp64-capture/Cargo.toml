@@ -1,0 +1,20 @@
+[package]
+name = "gp64-capture"
+version = "0.4.3"
+edition.workspace = true
+
+license.workspace = true
+
+[dependencies]
+ropus = "0.11"
+rvp9-encoder = "0.2.0-alpha.2"
+tracing.workspace = true
+
+[dev-dependencies]
+# Decode oracle for the end-to-end capture test. Pure Rust, so it always runs —
+# unlike an ffmpeg-on-PATH check, which would silently pass where the tool is
+# absent.
+rvp9-decoder = "0.2.0-alpha.2"
+
+[lints]
+workspace = true

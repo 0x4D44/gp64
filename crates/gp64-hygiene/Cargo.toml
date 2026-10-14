@@ -1,0 +1,12 @@
+[package]
+name = "gp64-hygiene"
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-or-later"
+publish = false
+
+[dev-dependencies]
+gp64-dos = { path = "../gp64-dos" }
+
+[lints]
+workspace = true

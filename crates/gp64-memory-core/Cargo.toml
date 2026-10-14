@@ -1,0 +1,21 @@
+[package]
+name = "gp64-memory-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Machine-neutral x86 memory core and the X86Machine contract"
+
+[features]
+default = []
+# Oracle-only storage (the O3 forced-miss sweep switch) that debug builds get
+# automatically. `gp64-memory`'s own `test-instrumentation` forwards here.
+test-instrumentation = []
+# `testing::NullMachine`, the isolated test machine. Never in a
+# production graph.
+test-util = []
+
+[dependencies]
+gp64-types.workspace = true
+
+[lints]
+workspace = true

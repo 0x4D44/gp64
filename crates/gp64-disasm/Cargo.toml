@@ -1,0 +1,25 @@
+[package]
+name = "gp64-disasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native x86 instruction decoder: length, validity, and (later) disassembly"
+
+[dependencies]
+
+[dev-dependencies]
+# ADJUDICATION ONLY. Every length and validity verdict this crate produces is
+# swept exhaustively against iced-x86 in `tests/`, which is the whole reason the
+# crate can be trusted to replace it on the guest-fault path. It must never
+# become a normal dependency: the point of this crate is that `gp64` does not
+# link iced.
+iced-x86 = { workspace = true }
+
+# The x87 escape space has a SECOND oracle, and a better one: the portable
+# decoder the shipped interpreter actually executes on. Agreeing with it is what
+# stops a fault dump naming something other than what ran. Dev-only, and
+# acyclic — `gp64-cpu` does not depend on this crate.
+gp64-cpu = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,32 @@
+[package]
+license.workspace = true
+name = "gp64-dos"
+version.workspace = true
+edition.workspace = true
+description = "DOS emulation for gp64 (INT 21h, file system, DPMI, memory)"
+
+[dependencies]
+# Internal crates
+gp64-types.workspace = true
+gp64-memory.workspace = true
+gp64-cpu.workspace = true
+gp64-hw.workspace = true
+
+# Shared dependencies
+tracing.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+gp64-types = { workspace = true, features = ["test-util"] }
+tracing-subscriber = { workspace = true }
+
+[features]
+default = []
+test-util = ["gp64-types/test-util"]
+
+
+[lints]
+workspace = true
