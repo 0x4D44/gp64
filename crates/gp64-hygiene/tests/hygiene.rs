@@ -1418,8 +1418,17 @@ fn seed_history_paths(repo: &Path, allowed: &str, data: &[u8]) {
     let index = |mode: &str, path: &str| {
         // NUL-framed index plumbing creates historical names without requiring
         // the host filesystem to support their characters (notably Windows).
+        // Git for Windows' core.protectNTFS otherwise skips these names with
+        // "Ignoring path" and still exits 0. The names never reach the
+        // filesystem: the last fixture commit removes them before any checkout.
         let mut child = Command::new("git")
-            .args(["update-index", "-z", "--index-info"])
+            .args([
+                "-c",
+                "core.protectNTFS=false",
+                "update-index",
+                "-z",
+                "--index-info",
+            ])
             .current_dir(repo)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1434,7 +1443,7 @@ fn seed_history_paths(repo: &Path, allowed: &str, data: &[u8]) {
             .unwrap();
         let output = child.wait_with_output().unwrap();
         assert!(
-            output.status.success(),
+            output.status.success() && output.stderr.is_empty(),
             "index fixture: {}",
             String::from_utf8_lossy(&output.stderr)
         );
