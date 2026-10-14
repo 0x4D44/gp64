@@ -19,6 +19,9 @@ impl Pacer {
     }
     /// Budget for the next approximately 1 ms slice. Actual instruction cycles
     /// are supplied on the next call, so instruction overshoot cannot accumulate.
+    /// Zero until half a slice is due: a caught-up loop would otherwise run
+    /// slices of a few cycles, spending its time on per-slice overhead that
+    /// the capacity estimate then mistakes for guest work.
     pub fn budget(&mut self, now: Duration, cycle: u64) -> u64 {
         let elapsed = now
             .saturating_sub(self.last)
@@ -31,9 +34,12 @@ impl Pacer {
         if self.target.saturating_sub(cycle) > cap {
             self.target = cycle.saturating_add(cap);
         }
-        self.target
-            .saturating_sub(cycle)
-            .min((self.rate / 1000).max(1))
+        let due = self.target.saturating_sub(cycle);
+        let slice = (self.rate / 1000).max(1);
+        if due < slice.div_ceil(2) {
+            return 0;
+        }
+        due.min(slice)
     }
     /// Moves the pacing reference by `cycles`: positive runs the guest ahead
     /// of real time, negative holds it back. Run-ahead is limited so pending
@@ -308,6 +314,15 @@ impl Pacing {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_caught_up_pacer_waits_for_half_a_slice() {
+        // 100 MHz: a slice is 1 ms, 100,000 cycles.
+        let mut pacer = Pacer::new(100_000_000, Duration::ZERO, 0);
+        assert_eq!(pacer.budget(Duration::from_micros(1), 0), 0);
+        assert_eq!(pacer.budget(Duration::from_micros(400), 0), 0);
+        assert_eq!(pacer.budget(Duration::from_micros(600), 0), 60_000);
+        assert_eq!(pacer.budget(Duration::from_millis(3), 0), 100_000);
+    }
     #[test]
     fn automatic_capacity_climbs_then_falls_with_workload() {
         let mut pacing = Pacing::new(20_000_000, Duration::ZERO, 0);
