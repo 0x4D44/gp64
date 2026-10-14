@@ -5,6 +5,7 @@ mod dosrun;
 pub mod launcher;
 pub mod modem;
 pub mod mouse;
+pub mod nullmodem;
 mod policy;
 mod timing;
 use bus::Bus;
@@ -69,6 +70,7 @@ pub struct Machine {
     clock: Timeline,
     io_fraction: u64,
     modem: Option<modem::TcpModem>,
+    null_modem: Option<nullmodem::NullModem>,
     exception_defaults: Option<(u32, [Option<u32>; 32])>,
     capture_frames: Option<Vec<CompletedFrame>>,
 }
@@ -94,6 +96,7 @@ impl Machine {
             clock,
             io_fraction: 0,
             modem: None,
+            null_modem: None,
             exception_defaults: None,
             capture_frames: None,
         }
@@ -132,6 +135,15 @@ impl Machine {
         modem.start_at(self.cycle());
         let line = modem.line();
         self.modem = Some(modem);
+        Ok(line)
+    }
+    /// Attach a null-modem cable with nothing at the far end; the returned
+    /// handle connects it. The COM port stays fixed while it is attached.
+    pub fn attach_null_modem(&mut self, com: u8) -> std::io::Result<modem::ModemLine> {
+        let mut cable = nullmodem::NullModem::attach(com, &mut self.io.serial)?;
+        cable.start_at(self.cycle());
+        let line = cable.line();
+        self.null_modem = Some(cable);
         Ok(line)
     }
     /// The attached modem's line control, if a modem is attached.
@@ -384,6 +396,9 @@ impl Machine {
     fn advance(&mut self) {
         if let Some(modem) = &mut self.modem {
             modem.pump(&mut self.io.serial, self.cpu.cycles, self.clock.rate);
+        }
+        if let Some(cable) = &mut self.null_modem {
+            cable.pump(&mut self.io.serial, self.cpu.cycles, self.clock.rate);
         }
         // Services may change VGA state directly. Apply their pending timing and
         // memory-pipeline changes before the next guest instruction.

@@ -78,7 +78,7 @@ impl std::fmt::Display for LineStatus {
     }
 }
 /// A few words for a socket error, short enough for one menu row.
-fn short_reason(error: &io::Error) -> String {
+pub(crate) fn short_reason(error: &io::Error) -> String {
     use io::ErrorKind::{
         AddrInUse, AddrNotAvailable, ConnectionAborted, ConnectionRefused, ConnectionReset,
         HostUnreachable, InvalidInput, NetworkDown, NetworkUnreachable, PermissionDenied, TimedOut,
@@ -100,7 +100,7 @@ fn short_reason(error: &io::Error) -> String {
         }
     }
 }
-enum LineCommand {
+pub(crate) enum LineCommand {
     Listen(TcpListener),
     Dial(PendingConnection),
     HangUp,
@@ -117,6 +117,21 @@ pub struct ModemLine {
     com: u8,
 }
 impl ModemLine {
+    /// A line handle and the receiver its owner applies commands from.
+    pub(crate) fn new(
+        com: u8,
+        shutdown: Arc<AtomicBool>,
+    ) -> (Self, Receiver<LineCommand>, Arc<Mutex<LineStatus>>) {
+        let (commands, receiver) = mpsc::channel();
+        let status = Arc::<Mutex<LineStatus>>::default();
+        let line = Self {
+            commands,
+            status: Arc::clone(&status),
+            shutdown,
+            com,
+        };
+        (line, receiver, status)
+    }
     /// The one-based COM port the modem answers on, fixed for the run.
     pub fn com(&self) -> u8 {
         self.com
@@ -131,8 +146,23 @@ impl ModemLine {
     /// Refused while a line is up or coming up. Host port zero selects an
     /// ephemeral port; the bound address is returned for hosts.
     pub fn start(&self, connection: &ModemConnection) -> io::Result<Option<SocketAddr>> {
+        self.start_unless(connection, LineStatus::is_active)
+    }
+    /// Dials `target`, replacing a listener that has no caller yet.
+    /// Refused while a dial or call is up.
+    pub fn call(&self, target: &str) -> io::Result<()> {
+        self.start_unless(&ModemConnection::Join(target.to_owned()), |status| {
+            matches!(status, LineStatus::Connecting(_) | LineStatus::Connected(_))
+        })
+        .map(drop)
+    }
+    fn start_unless(
+        &self,
+        connection: &ModemConnection,
+        busy: impl FnOnce(&LineStatus) -> bool,
+    ) -> io::Result<Option<SocketAddr>> {
         let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
-        if status.is_active() {
+        if busy(&status) {
             return Err(io::Error::new(
                 io::ErrorKind::ResourceBusy,
                 "the modem line is in use; hang up first",
@@ -222,16 +252,10 @@ impl TcpModem {
         }
         let queues = Arc::new(Mutex::new(Queues::default()));
         let shutdown = Arc::new(AtomicBool::new(false));
-        let (commands, receiver) = mpsc::channel();
-        let line = ModemLine {
-            commands,
-            status: Arc::default(),
-            shutdown: Arc::clone(&shutdown),
-            com,
-        };
+        let (line, receiver, status) = ModemLine::new(com, Arc::clone(&shutdown));
         let mut engine = Box::new(Engine::new(Arc::clone(&queues), None, None, clock));
         engine.commands = receiver;
-        engine.status = Arc::clone(&line.status);
+        engine.status = status;
         let (thread, emulated) = match clock {
             ModemClock::RealTime => {
                 let stop = Arc::clone(&shutdown);
@@ -366,7 +390,7 @@ fn connect_addresses<T>(
     result
 }
 
-struct PendingConnection {
+pub(crate) struct PendingConnection {
     receiver: Receiver<io::Result<TcpStream>>,
     deadline: Instant,
     /// Set when the dial is dropped (hang-up or a new line) so the worker
@@ -379,7 +403,7 @@ impl Drop for PendingConnection {
     }
 }
 impl PendingConnection {
-    fn start(target: String, shutdown: Arc<AtomicBool>) -> io::Result<Self> {
+    pub(crate) fn start(target: String, shutdown: Arc<AtomicBool>) -> io::Result<Self> {
         Self::resolve(
             move || target.to_socket_addrs().map(Iterator::collect),
             shutdown,
@@ -422,7 +446,7 @@ impl PendingConnection {
         })
     }
 
-    fn poll(&self) -> Option<io::Result<TcpStream>> {
+    pub(crate) fn poll(&self) -> Option<io::Result<TcpStream>> {
         if Instant::now() >= self.deadline {
             return Some(Err(io::Error::new(
                 io::ErrorKind::TimedOut,
