@@ -25,6 +25,8 @@ use winit::event_loop::EventLoopProxy;
 pub const SOUND_HINT: &str =
     "Sound Blaster digitised audio is not emulated; FM music and effects play";
 pub enum Notice {
+    Frame(u64),
+    RecordingChanged,
     Program(String),
     SoundHint,
     /// A recording was saved or failed; one line for the user.
@@ -40,10 +42,31 @@ pub enum Input {
     /// Starts (true) or stops (false) a recording to the video folder.
     Record(bool),
 }
+#[derive(Default)]
 pub struct Frame {
     pub pixels: Vec<u32>,
     pub width: usize,
     pub height: usize,
+    pub generation: u64,
+}
+impl Frame {
+    fn publish(&mut self, pixels: &[u32], width: usize, height: usize) -> Option<Notice> {
+        if self.generation != 0
+            && self.width == width
+            && self.height == height
+            && self.pixels == pixels
+        {
+            return None;
+        }
+        self.update(pixels, width, height, self.generation + 1);
+        Some(Notice::Frame(self.generation))
+    }
+    pub fn update(&mut self, pixels: &[u32], width: usize, height: usize, generation: u64) {
+        pixels.clone_into(&mut self.pixels);
+        self.width = width;
+        self.height = height;
+        self.generation = generation;
+    }
 }
 /// Line controls for the guest's two serial devices.
 pub struct Links {
@@ -54,7 +77,7 @@ pub struct Links {
 }
 pub struct Emulation {
     pub input: Sender<Input>,
-    pub frame: Arc<Mutex<Option<Frame>>>,
+    pub frame: Arc<Mutex<Frame>>,
     pub recording: Status,
     /// The COM1 cable and COM2 phone line, once the guest has started.
     pub links: Arc<OnceLock<Links>>,
@@ -71,7 +94,7 @@ impl Emulation {
         audio: Option<(u32, Producer)>,
     ) -> std::io::Result<Self> {
         let (input, receiver) = mpsc::channel();
-        let frame = Arc::new(Mutex::new(None));
+        let frame = Arc::new(Mutex::new(Frame::default()));
         let stop = Arc::new(AtomicBool::new(false));
         let worker_frame = frame.clone();
         let worker_stop = stop.clone();
@@ -85,6 +108,7 @@ impl Emulation {
                 set_interactive_qos();
                 let mut audio = audio;
                 let mut recording = Recording::new(worker_status);
+                let mut recording_active = false;
                 let mut script = script.map(Runner::new);
                 let result = (|| -> anyhow::Result<u8> {
                     let mut dos = if let Some(program) = program {
@@ -173,6 +197,10 @@ impl Emulation {
                         }
                         reap_recordings(&mut recording, |finished| report(&proxy, finished))
                             .map_err(anyhow::Error::msg)?;
+                        if recording.is_active() != recording_active {
+                            recording_active = recording.is_active();
+                            let _ = proxy.send_event(Notice::RecordingChanged);
+                        }
                         let now = clock.elapsed();
                         let cycle = dos.machine.cycle();
                         let fill = audio.as_ref().map(|(rate, producer)| Fill {
@@ -238,12 +266,14 @@ impl Emulation {
                             if vga.has_completed_frame() {
                                 if let Ok(mut latest) = worker_frame.try_lock() {
                                     let (width, height) = vga.completed_dimensions();
-                                    *latest = Some(Frame {
-                                        pixels: vga.completed_framebuffer().to_vec(),
-                                        width,
-                                        height,
-                                    });
+                                    // An unchanged completion is consumed too.
                                     completed = dos.machine.completed_frames();
+                                    let notice =
+                                        latest.publish(vga.completed_framebuffer(), width, height);
+                                    drop(latest);
+                                    if let Some(notice) = notice {
+                                        let _ = proxy.send_event(notice);
+                                    }
                                 }
                             }
                         }
@@ -496,6 +526,58 @@ impl Drop for Emulation {
 mod tests {
     use super::*;
 
+    #[test]
+    fn identical_completed_frames_do_not_publish_or_wake_the_ui() {
+        let mut latest = Frame::default();
+        // The first frame must publish even when every pixel is black.
+        assert!(matches!(
+            latest.publish(&[0; 4], 2, 2),
+            Some(Notice::Frame(1))
+        ));
+        let allocation = latest.pixels.as_ptr();
+        let notice = latest.publish(&[0; 4], 2, 2);
+        assert_eq!((latest.generation, notice.is_some()), (1, false));
+        assert_eq!(latest.pixels.as_ptr(), allocation);
+        // A palette change is visible here as a change in the RGB pixels.
+        let pixels = [0, 0, 0, 0xffffff];
+        assert!(matches!(
+            latest.publish(&pixels, 2, 2),
+            Some(Notice::Frame(2))
+        ));
+        assert_eq!(latest.pixels, pixels);
+        assert!(matches!(
+            latest.publish(&pixels, 4, 1),
+            Some(Notice::Frame(3))
+        ));
+        assert_eq!((latest.width, latest.height, latest.generation), (4, 1, 3));
+        let notice = latest.publish(&pixels, 4, 1);
+        assert_eq!((latest.generation, notice.is_some()), (3, false));
+        assert_eq!(latest.pixels.as_ptr(), allocation);
+    }
+
+    #[test]
+    fn published_frames_reuse_storage_and_leave_the_ui_snapshot_frozen() {
+        let mut latest = Frame::default();
+        latest.update(&[1, 2, 3, 4], 2, 2, 1);
+        let mut snapshot = Frame::default();
+        snapshot.update(
+            &latest.pixels,
+            latest.width,
+            latest.height,
+            latest.generation,
+        );
+        let allocation = latest.pixels.as_ptr();
+        latest.update(&[5, 6, 7, 8], 4, 1, 2);
+        assert_eq!(latest.pixels.as_ptr(), allocation);
+        assert_eq!(latest.pixels, [5, 6, 7, 8]);
+        assert_eq!((latest.width, latest.height, latest.generation), (4, 1, 2));
+        assert_eq!(snapshot.pixels, [1, 2, 3, 4]);
+        assert_eq!(
+            (snapshot.width, snapshot.height, snapshot.generation),
+            (2, 2, 1)
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn emulation_thread_asks_for_interactive_qos() {
@@ -675,7 +757,7 @@ mod tests {
         let (ready, started) = mpsc::channel();
         let mut emulation = Emulation {
             input,
-            frame: Arc::new(Mutex::new(None)),
+            frame: Arc::new(Mutex::new(Frame::default())),
             recording: Status::default(),
             links: Arc::default(),
             stop,

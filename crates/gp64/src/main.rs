@@ -136,6 +136,7 @@ fn run() -> Result<u8> {
         motion: (0.0, 0.0),
         scaler: saved.scaler,
         blitter: scaler::Blitter::default(),
+        frame: emulation::Frame::default(),
         saved,
         program: String::new(),
         hint_until: None,
@@ -144,7 +145,8 @@ fn run() -> Result<u8> {
         usage: None,
         next_usage: Instant::now(),
         opened: Instant::now(),
-        next_redraw: Instant::now(),
+        redraw: Redraw::new(Instant::now()),
+        next_links: Instant::now(),
         result: Ok(0),
     };
     events.run_app(&mut app)?;
@@ -204,6 +206,42 @@ fn set_icons(window: &Window) {
 }
 #[cfg(not(windows))]
 fn set_icons(_window: &Window) {}
+
+const OVERLAY_INTERVAL: Duration = Duration::from_millis(16);
+
+/// Guest publications and UI changes are independent of the overlay clock.
+struct Redraw {
+    published: u64,
+    drawn: u64,
+    dirty: bool,
+    next_overlay: Instant,
+}
+impl Redraw {
+    fn new(now: Instant) -> Self {
+        Self {
+            published: 0,
+            drawn: 0,
+            dirty: false,
+            next_overlay: now + OVERLAY_INTERVAL,
+        }
+    }
+    fn published(&mut self, generation: u64) {
+        self.published = self.published.max(generation);
+    }
+    fn invalidate(&mut self) {
+        self.dirty = true;
+    }
+    fn needed(&self, now: Instant, overlay: bool) -> bool {
+        self.dirty || self.published > self.drawn || (overlay && now >= self.next_overlay)
+    }
+    fn presented(&mut self, generation: u64, now: Instant) {
+        self.published(generation);
+        self.drawn = generation;
+        self.dirty = false;
+        self.next_overlay = now + OVERLAY_INTERVAL;
+    }
+}
+
 struct App {
     launch: Option<(Options, PathBuf, Option<String>, Option<script::Script>)>,
     proxy: winit::event_loop::EventLoopProxy<Notice>,
@@ -221,6 +259,7 @@ struct App {
     motion: (f64, f64),
     scaler: scaler::Scaler,
     blitter: scaler::Blitter,
+    frame: emulation::Frame,
     /// The persisted choices; only menu and hotkey changes update them, so
     /// one-run command-line overrides never reach the file.
     saved: settings::Settings,
@@ -243,7 +282,8 @@ struct App {
     next_usage: Instant,
     /// Drives the REC indicator's pulse.
     opened: Instant,
-    next_redraw: Instant,
+    redraw: Redraw,
+    next_links: Instant,
     result: std::result::Result<u8, String>,
 }
 impl App {
@@ -305,11 +345,13 @@ impl App {
         }
         self.saved.fullscreen = on;
         settings::save(&self.saved);
+        self.redraw.invalidate();
     }
     fn set_scaler(&mut self, scaler: scaler::Scaler) {
         self.scaler = scaler;
         self.saved.scaler = scaler;
         settings::save(&self.saved);
+        self.redraw.invalidate();
     }
     /// Emulated milliseconds into the active recording, if any.
     fn recording(&self) -> Option<u64> {
@@ -357,7 +399,7 @@ impl App {
         }
     }
     /// Opens discovery while a link is enabled, and moves each link one
-    /// step: listen, call a peer, or hang up. Runs on every frame.
+    /// step: listen, call a peer, or hang up. Also polled while links are enabled.
     fn drive_links(&mut self) {
         self.discovery
             .set_active(self.serial.enabled || self.modem.enabled);
@@ -428,6 +470,7 @@ impl App {
             self.release_guest_input();
         }
         self.sync_pause();
+        self.redraw.invalidate();
     }
     fn menu_key(&mut self, key: overlay::Key) {
         let values = self.menu_values();
@@ -456,8 +499,23 @@ impl App {
         }
         self.drive_links();
         self.sync_pause();
+        self.redraw.invalidate();
     }
     fn draw(&mut self) -> Result<()> {
+        if let Some(emulation) = &self.emulation {
+            // Copy only the small guest frame under the lock; scaling and
+            // presentation must never hold up the emulation thread.
+            if let Ok(latest) = emulation.frame.lock() {
+                if latest.generation != self.frame.generation {
+                    self.frame.update(
+                        &latest.pixels,
+                        latest.width,
+                        latest.height,
+                        latest.generation,
+                    );
+                }
+            }
+        }
         let values = self.menu_values();
         let Some(window) = &self.window else {
             return Ok(());
@@ -477,24 +535,17 @@ impl App {
         let mut buffer = surface
             .buffer_mut()
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        buffer.fill(0);
-        if let Some(emulation) = &self.emulation {
-            // The emulator drops a presentation update if this lock is held.
-            // Drawing always uses the latest complete frame, never a partial raster.
-            if let Ok(latest) = emulation.frame.lock() {
-                if let Some(frame) = latest.as_ref() {
-                    self.blitter.blit(
-                        &frame.pixels,
-                        frame.width,
-                        frame.height,
-                        &mut buffer,
-                        size.width as usize,
-                        size.height as usize,
-                        self.scaler,
-                    );
-                }
-            }
-        }
+        // Softbuffer may return a buffer of age zero with unspecified contents.
+        // The blitter clears it once, including when no guest frame exists yet.
+        self.blitter.blit(
+            &self.frame.pixels,
+            self.frame.width,
+            self.frame.height,
+            &mut buffer,
+            size.width as usize,
+            size.height as usize,
+            self.scaler,
+        );
         // Drawn into the window buffer only, after scaling: never into the
         // guest frame, so recordings never contain the menu.
         self.menu.render(
@@ -547,6 +598,7 @@ impl ApplicationHandler<Notice> for App {
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?,
             );
             self.window = Some(window);
+            self.redraw.invalidate();
             let (options, folder, program, script) =
                 self.launch.take().context("missing launch parameters")?;
             let audio = self.audio.as_mut().and_then(|audio| {
@@ -569,6 +621,8 @@ impl ApplicationHandler<Notice> for App {
     }
     fn user_event(&mut self, events: &ActiveEventLoop, notice: Notice) {
         match notice {
+            Notice::Frame(generation) => self.redraw.published(generation),
+            Notice::RecordingChanged => self.redraw.invalidate(),
             Notice::Program(program) => {
                 self.program = program;
                 self.title();
@@ -576,10 +630,12 @@ impl ApplicationHandler<Notice> for App {
             Notice::SoundHint => {
                 self.hint_until = Some(Instant::now() + Duration::from_secs(10));
                 self.title();
+                self.redraw.invalidate();
             }
             Notice::Recording(message) => {
                 self.message = Some((message, Instant::now() + Duration::from_secs(10)));
                 self.title();
+                self.redraw.invalidate();
             }
             Notice::Done(result) => {
                 self.result = result;
@@ -593,15 +649,22 @@ impl ApplicationHandler<Notice> for App {
         }
         match event {
             WindowEvent::CloseRequested => events.exit(),
-            WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+            WindowEvent::Moved(_)
+            | WindowEvent::Resized(_)
+            | WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(placement) = &mut self.placement {
                     placement.changed();
                 }
+                if !matches!(event, WindowEvent::Moved(_)) {
+                    self.redraw.invalidate();
+                }
             }
+            WindowEvent::Occluded(false) => self.redraw.invalidate(),
             WindowEvent::RedrawRequested => {
                 if let Err(error) = self.draw() {
                     self.fail(events, error);
                 }
+                self.redraw.presented(self.frame.generation, Instant::now());
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::Focused(false) => {
@@ -692,6 +755,7 @@ impl ApplicationHandler<Notice> for App {
         if self.hint_until.is_some_and(|until| now >= until) {
             self.hint_until = None;
             self.title();
+            self.redraw.invalidate();
         }
         if self
             .message
@@ -700,6 +764,7 @@ impl ApplicationHandler<Notice> for App {
         {
             self.message = None;
             self.title();
+            self.redraw.invalidate();
         }
         if now >= self.next_usage {
             let usage = self.cpu.sample(now);
@@ -709,13 +774,32 @@ impl ApplicationHandler<Notice> for App {
                 self.title();
             }
         }
-        if now >= self.next_redraw {
+        let overlay = self.menu.is_open() || self.recording().is_some();
+        if self.redraw.needed(now, overlay) {
             if let Some(window) = &self.window {
                 window.request_redraw();
+                self.redraw.next_overlay = now + OVERLAY_INTERVAL;
             }
-            self.next_redraw = now + Duration::from_millis(16);
         }
-        events.set_control_flow(ControlFlow::WaitUntil(self.next_redraw));
+        let mut wake = self.next_usage;
+        if overlay {
+            wake = wake.min(self.redraw.next_overlay);
+        }
+        // Discovery and link retry keep their former cadence even when the
+        // guest has stopped producing frames. They need no presentation.
+        if self.serial.enabled || self.modem.enabled {
+            if now >= self.next_links {
+                self.next_links = now + OVERLAY_INTERVAL;
+            }
+            wake = wake.min(self.next_links);
+        }
+        if let Some(until) = self.hint_until {
+            wake = wake.min(until);
+        }
+        if let Some((_, until)) = &self.message {
+            wake = wake.min(*until);
+        }
+        events.set_control_flow(ControlFlow::WaitUntil(wake));
     }
     fn exiting(&mut self, _events: &ActiveEventLoop) {
         if let (Some(placement), Some(window)) = (&mut self.placement, &self.window) {
@@ -728,6 +812,96 @@ impl ApplicationHandler<Notice> for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redraw_idle_needs_no_frame_or_timer_poll() {
+        let now = Instant::now();
+        let mut redraw = Redraw::new(now);
+        redraw.presented(1, now);
+        assert!(!redraw.needed(now + Duration::from_secs(30), false));
+    }
+
+    #[test]
+    fn redraw_new_frame_is_immediate_and_stale_notices_are_ignored() {
+        let now = Instant::now();
+        let mut redraw = Redraw::new(now);
+        redraw.published(1);
+        assert!(redraw.needed(now, false));
+        // The draw may copy a newer frame before its notice is delivered.
+        redraw.presented(2, now);
+        redraw.published(1);
+        redraw.published(2);
+        assert!(!redraw.needed(now, false));
+        redraw.published(3);
+        assert!(redraw.needed(now, false));
+    }
+
+    #[test]
+    fn redraw_menu_and_recording_keep_the_overlay_cadence() {
+        let now = Instant::now();
+        let mut redraw = Redraw::new(now);
+        let mut menu = overlay::Menu::default();
+        menu.toggle();
+        assert!(!redraw.needed(now, menu.is_open()));
+        assert!(redraw.needed(now + OVERLAY_INTERVAL, menu.is_open()));
+        redraw.presented(0, now + OVERLAY_INTERVAL);
+        assert!(!redraw.needed(now + OVERLAY_INTERVAL, menu.is_open()));
+        assert!(redraw.needed(now + OVERLAY_INTERVAL * 2, menu.is_open()));
+        menu.toggle();
+        assert!(!redraw.needed(now + OVERLAY_INTERVAL * 2, menu.is_open()));
+        // Closing the menu or stopping a recording must erase the overlay.
+        redraw.invalidate();
+        assert!(redraw.needed(now + OVERLAY_INTERVAL, false));
+    }
+
+    #[test]
+    fn redraw_resize_and_settings_changes_are_immediate() {
+        let now = Instant::now();
+        let mut redraw = Redraw::new(now);
+        redraw.presented(1, now);
+        redraw.invalidate();
+        assert!(redraw.needed(now, false));
+        redraw.presented(1, now);
+        assert!(!redraw.needed(now, false));
+    }
+
+    #[test]
+    fn redraw_publication_during_a_draw_is_not_lost() {
+        let now = Instant::now();
+        let mut redraw = Redraw::new(now);
+        redraw.published(1);
+        redraw.published(2);
+        redraw.presented(1, now);
+        assert!(redraw.needed(now, false));
+        redraw.presented(2, now);
+        assert!(!redraw.needed(now, false));
+    }
+
+    #[test]
+    fn single_clear_matches_previous_draw_across_scalers_and_resizes() {
+        let source: Vec<u32> = (0..320 * 200).map(|i| (i * 757) & 0xffffff).collect();
+        for scaler in scaler::Scaler::ALL {
+            let mut old_blitter = scaler::Blitter::default();
+            let mut blitter = scaler::Blitter::default();
+            let mut old = Vec::new();
+            let mut target = Vec::new();
+            for (width, height) in [(997, 731), (701, 999), (80, 60), (997, 731)] {
+                old.resize(width * height, 0xabcdef);
+                target.resize(width * height, 0xabcdef);
+                // Includes old overlays and age-zero/older softbuffer contents.
+                old.fill(0xffffff);
+                target.fill(0xffffff);
+                old.fill(0);
+                old_blitter.blit(&source, 320, 200, &mut old, width, height, scaler);
+                blitter.blit(&source, 320, 200, &mut target, width, height, scaler);
+                assert!(target == old, "{scaler:?} at {width}x{height}");
+            }
+            old.fill(0);
+            old_blitter.blit(&[], 0, 0, &mut old, 997, 731, scaler);
+            blitter.blit(&[], 0, 0, &mut target, 997, 731, scaler);
+            assert!(target == old, "empty {scaler:?}");
+        }
+    }
 
     #[test]
     fn title_shows_the_mouse_hint_only_while_captured() {
