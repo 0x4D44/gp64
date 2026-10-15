@@ -101,7 +101,8 @@ ends the run with status 1.
 - `wait N`: wait N video frames.
 - `wait-stable [N]`: wait until three frame hashes taken 10 frames apart agree;
   fail after N frames (default 300).
-- `key NAME`: press and release a key, held for two frames (`Enter`, `Escape`,
+- `key NAME [FRAMES]`: press and release a key, held for FRAMES frames or by
+  default two (`Enter`, `Escape`,
   `Down`, `F1`, `a`, …). `type "text"` types each character, with Shift where needed.
 - `mouse-click X Y [left|right|middle]`, `mouse-double-click`, `mouse-down X Y`,
   `mouse-up`: X and Y are pixels of the displayed frame.
@@ -109,6 +110,9 @@ ends the run with status 1.
   taken from the current folder, and `{step}` and `{frame}` are filled in.
 - `framehash`: log the CRC-32 of the displayed frame.
 - `log "text"`, `label: NAME` and `skip-to NAME` (forward only).
+- `serial on|off` and `modem on|off`: switch the F12 menu's link for this run
+  only; the saved choice is unchanged. Two scripted copies with the same link
+  on find each other as from the menu.
 - `launch`, `status`, `speed`, `perf-begin` and `perf-end` are accepted and
   ignored; gp64's own command line chooses the program.
 

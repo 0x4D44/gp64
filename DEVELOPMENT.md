@@ -75,6 +75,16 @@ Do not commit owned media, captures, denylists or debugging notes containing
 program-specific internals. Generated fixtures should demonstrate generic DOS
 or hardware behaviour rather than encode one program's implementation.
 
+## Measuring speed
+
+gp64 logs guest speed every five seconds under `gp64::speed` in the diagnostics
+log: guest MHz against the paced rate, the emulation thread's host load, and how
+many displayed frames changed per second. Set `GP64_MAX_MHZ` to cap the automatic
+rate, for example `GP64_MAX_MHZ=16`, to see how the program behaves on a slower
+host. Script `log` lines land in the same file, so a script can mark the span to
+read. Two scripted copies with `modem on` or `serial on` make a link test that
+needs no one at the keyboard.
+
 ## Manual verification
 
 On each platform you claim to support, check launch, display and scaling,

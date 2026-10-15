@@ -610,6 +610,18 @@ impl ApplicationHandler<Notice> for App {
                 self.title();
                 self.redraw.invalidate();
             }
+            // A script's link is for this run only, so it is not saved.
+            Notice::Link { modem, on } => {
+                let link = if modem {
+                    &mut self.modem
+                } else {
+                    &mut self.serial
+                };
+                link.enabled = on;
+                self.drive_links();
+                self.sync_pause();
+                self.redraw.invalidate();
+            }
             Notice::Done(result) => {
                 self.result = result;
                 events.exit();

@@ -30,9 +30,11 @@ pub enum Command {
     /// `launch`, `status`, `speed`, `perf-begin` and `perf-end`: accepted for
     /// compatibility and logged, but gp64's own command line decides these.
     Ignored(String),
+    /// `key NAME [FRAMES]`: held for FRAMES frames, by default two.
     Key {
         name: String,
         key: KeyDef,
+        hold: Option<u32>,
     },
     Type(String),
     MouseClick {
@@ -58,12 +60,23 @@ pub enum Command {
     Log(String),
     Label(String),
     SkipTo(String),
+    /// `serial on|off` or `modem on|off`: the F12 menu's link rows, for
+    /// this run only.
+    Link {
+        modem: bool,
+        on: bool,
+    },
 }
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let button = |button: &MouseButton| format!("{button:?}").to_ascii_lowercase();
         match self {
             Self::Ignored(text) => write!(f, "{text}"),
+            Self::Key {
+                name,
+                hold: Some(frames),
+                ..
+            } => write!(f, "key {name} {frames}"),
             Self::Key { name, .. } => write!(f, "key {name}"),
             Self::Type(text) => write!(f, "type {text:?}"),
             Self::MouseClick { x, y, button: b } => {
@@ -83,6 +96,12 @@ impl fmt::Display for Command {
             Self::Log(message) => write!(f, "log {message:?}"),
             Self::Label(name) => write!(f, "label: {name}"),
             Self::SkipTo(label) => write!(f, "skip-to {label}"),
+            Self::Link { modem, on } => write!(
+                f,
+                "{} {}",
+                if *modem { "modem" } else { "serial" },
+                if *on { "on" } else { "off" }
+            ),
         }
     }
 }
@@ -213,7 +232,13 @@ fn parse_command(line: &str, number: usize) -> Result<Command, ParseError> {
             let name = single_arg(args, "key", number)?;
             let key =
                 keys::lookup(&name).ok_or_else(|| err(format!("unknown key name '{name}'")))?;
-            Command::Key { name, key }
+            let (_, rest) = split_first_word(args);
+            let hold = if rest.is_empty() {
+                None
+            } else {
+                Some(number_arg(rest, "key", number)?)
+            };
+            Command::Key { name, key, hold }
         }
         "type" => Command::Type(quoted_string(args, number)?),
         "mouse-click" => {
@@ -257,6 +282,22 @@ fn parse_command(line: &str, number: usize) -> Result<Command, ParseError> {
                 return Err(err(format!("invalid label name '{label}' in skip-to")));
             }
             Command::SkipTo(label)
+        }
+        "serial" | "modem" => {
+            let state = single_arg(args, verb, number)?;
+            let on = match state.to_ascii_lowercase().as_str() {
+                "on" => true,
+                "off" => false,
+                _ => {
+                    return Err(err(format!(
+                        "unknown link state '{state}' (expected on or off)"
+                    )))
+                }
+            };
+            Command::Link {
+                modem: verb.eq_ignore_ascii_case("modem"),
+                on,
+            }
         }
         _ => return Err(err(format!("unknown command '{verb}'"))),
     })
@@ -431,8 +472,28 @@ mod tests {
         assert_eq!(one("perf-end run"), Command::Ignored("perf-end run".into()));
         assert!(matches!(
             one("Key down"),
-            Command::Key { name, key } if name == "down" && key.scancode == 0x50 && key.extended
+            Command::Key { name, key, .. } if name == "down" && key.scancode == 0x50 && key.extended
         ));
+        assert!(matches!(
+            one("key o 20"),
+            Command::Key { name, hold: Some(20), .. } if name == "o"
+        ));
+        assert_eq!(one("key o 20").to_string(), "key o 20");
+        assert_eq!(
+            one("MODEM on"),
+            Command::Link {
+                modem: true,
+                on: true
+            }
+        );
+        assert_eq!(
+            one("serial OFF"),
+            Command::Link {
+                modem: false,
+                on: false
+            }
+        );
+        assert_eq!(one("serial off").to_string(), "serial off");
         assert_eq!(one("type \"123\""), Command::Type("123".into()));
         assert_eq!(
             one("mouse-click 160 148"),
@@ -527,6 +588,15 @@ mod tests {
             ("\n\nfrobnicate", "line 3: unknown command 'frobnicate'"),
             ("key Hyper", "line 1: unknown key name 'Hyper'"),
             ("key", "line 1: key requires an argument"),
+            (
+                "key o x",
+                "line 1: invalid number 'x' for key: invalid digit found in string",
+            ),
+            ("modem", "line 1: modem requires an argument"),
+            (
+                "serial maybe",
+                "line 1: unknown link state 'maybe' (expected on or off)",
+            ),
             ("wait", "line 1: wait requires a numeric argument"),
             (
                 "wait x",

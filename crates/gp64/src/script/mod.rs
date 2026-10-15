@@ -44,6 +44,8 @@ pub trait Guest {
     fn button(&mut self, button: u8, down: bool);
     /// The displayed frame as `0RGB` pixels, width and height.
     fn picture(&self) -> (&[u32], usize, usize);
+    /// Turns the COM2 modem (`modem`) or COM1 cable link on or off.
+    fn link(&mut self, modem: bool, on: bool);
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -154,9 +156,9 @@ impl Runner {
         self.ops.push_back(Op::Until(*cursor));
     }
 
-    fn press(&mut self, key: keys::KeyDef) {
+    fn press(&mut self, key: keys::KeyDef, frames: u64) {
         self.ops.push_back(Op::Key(key, true));
-        self.hold(HOLD);
+        self.hold(frames);
         self.ops.push_back(Op::Key(key, false));
     }
 
@@ -170,7 +172,9 @@ impl Runner {
     fn start(&mut self, command: &Command, frame: u64, guest: &mut impl Guest) -> Result<String> {
         match command {
             Command::Ignored(_) => return Ok(" (ignored by gp64)".into()),
-            Command::Key { key, .. } => self.press(*key),
+            Command::Key { key, hold, .. } => {
+                self.press(*key, hold.map_or(HOLD, u64::from));
+            }
             Command::Type(text) => {
                 for ch in text.chars() {
                     let Some(strokes) = keys::type_char(ch) else {
@@ -234,6 +238,7 @@ impl Runner {
             Command::SkipTo(label) => {
                 self.pc = self.script.labels[label];
             }
+            Command::Link { modem, on } => guest.link(*modem, *on),
         }
         Ok(String::new())
     }
@@ -317,6 +322,7 @@ mod tests {
         Key(Vec<u8>, bool),
         Place(i32, i32),
         Button(u8, bool),
+        Link(bool, bool),
     }
 
     /// A guest whose frame and picture the test sets.
@@ -350,6 +356,9 @@ mod tests {
         }
         fn picture(&self) -> (&[u32], usize, usize) {
             (&self.pixels, 2, 2)
+        }
+        fn link(&mut self, modem: bool, on: bool) {
+            self.events.push((self.frame, Event::Link(modem, on)));
         }
     }
 
@@ -395,6 +404,31 @@ mod tests {
             ]
         );
         assert_eq!(guest.frame, 28);
+    }
+
+    #[test]
+    fn a_key_holds_for_its_frames_and_links_switch_at_once() {
+        let mut guest = Fake::new();
+        let mut script = runner(
+            "modem on
+key a 20
+serial off
+key a
+",
+        );
+        assert_eq!(run(&mut script, &mut guest, 100), Poll::Finished);
+        use Event::*;
+        assert_eq!(
+            guest.events,
+            vec![
+                (0, Link(true, true)),
+                (0, Key(vec![0x1E], true)),
+                (20, Key(vec![0x9E], false)),
+                (20, Link(false, false)),
+                (20, Key(vec![0x1E], true)),
+                (22, Key(vec![0x9E], false)),
+            ]
+        );
     }
 
     #[test]
@@ -493,6 +527,7 @@ mod tests {
             fn picture(&self) -> (&[u32], usize, usize) {
                 (&self.0.pixels, 2, 2)
             }
+            fn link(&mut self, _: bool, _: bool) {}
         }
         let mut guest = Animated(Fake::new());
         let mut script = runner("wait-stable 100\nkey a");

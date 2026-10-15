@@ -31,6 +31,11 @@ pub enum Notice {
     SoundHint,
     /// A recording was saved or failed; one line for the user.
     Recording(String),
+    /// A script turned the modem (true) or serial link on or off.
+    Link {
+        modem: bool,
+        on: bool,
+    },
     Done(Result<u8, String>),
 }
 pub enum Input {
@@ -135,11 +140,21 @@ impl Emulation {
                         Duration::ZERO,
                         dos.machine.cycle(),
                     );
+                    if let Some(mhz) = std::env::var("GP64_MAX_MHZ")
+                        .ok()
+                        .and_then(|mhz| mhz.parse::<u64>().ok())
+                    {
+                        pacing.set_ceiling(mhz.saturating_mul(1_000_000));
+                    }
                     let mut busy = Duration::ZERO;
+                    // Frames that differed from the one before: the
+                    // program's own picture rate.
+                    let mut pictures = 0u64;
                     let mut speed = SpeedLog::new(
                         Duration::ZERO,
                         dos.machine.cycle(),
                         dos.machine.slices(),
+                        pictures,
                     );
                     let mut mixer = audio.as_ref().map(|(rate, _)| Mixer::new(*rate));
                     let mut mixed = Vec::new();
@@ -214,7 +229,7 @@ impl Emulation {
                         speed.sample(
                             now,
                             spent,
-                            (cycle, dos.machine.slices()),
+                            (cycle, dos.machine.slices(), pictures),
                             pacing.rate(),
                             pacing.paused(),
                         );
@@ -272,6 +287,7 @@ impl Emulation {
                                         latest.publish(vga.completed_framebuffer(), width, height);
                                     drop(latest);
                                     if let Some(notice) = notice {
+                                        pictures += 1;
                                         let _ = proxy.send_event(notice);
                                     }
                                 }
@@ -279,7 +295,7 @@ impl Emulation {
                         }
                         // Only after guest time: a paused guest holds the script too.
                         if let Some(runner) = &mut script {
-                            match runner.poll(&mut ScriptGuest(&mut dos)) {
+                            match runner.poll(&mut ScriptGuest(&mut dos, &proxy)) {
                                 Poll::Running => {}
                                 Poll::Finished => return Ok(0),
                                 Poll::Failed(error) => anyhow::bail!("script: {error}"),
@@ -336,7 +352,7 @@ impl Emulation {
     }
 }
 /// The running machine as the script sees it.
-struct ScriptGuest<'a>(&'a mut DosMachine);
+struct ScriptGuest<'a>(&'a mut DosMachine, &'a EventLoopProxy<Notice>);
 impl script::Guest for ScriptGuest<'_> {
     fn frame(&self) -> u64 {
         self.0.machine.completed_frames()
@@ -363,6 +379,9 @@ impl script::Guest for ScriptGuest<'_> {
             .map_or(0, |rows| rows.min(height));
         (&pixels[..width * height], width, height)
     }
+    fn link(&mut self, modem: bool, on: bool) {
+        let _ = self.1.send_event(Notice::Link { modem, on });
+    }
 }
 /// Every few seconds logs how fast the guest ran, so a slow session can be
 /// told apart from a stalled guest after the fact.
@@ -370,15 +389,17 @@ struct SpeedLog {
     since: Duration,
     cycle: u64,
     slices: Slices,
+    pictures: u64,
     busy: Duration,
 }
 impl SpeedLog {
     const PERIOD: Duration = Duration::from_secs(5);
-    fn new(now: Duration, cycle: u64, slices: Slices) -> Self {
+    fn new(now: Duration, cycle: u64, slices: Slices, pictures: u64) -> Self {
         Self {
             since: now,
             cycle,
             slices,
+            pictures,
             busy: Duration::ZERO,
         }
     }
@@ -386,7 +407,7 @@ impl SpeedLog {
         &mut self,
         now: Duration,
         busy: Duration,
-        (cycle, slices): (u64, Slices),
+        (cycle, slices, pictures): (u64, Slices, u64),
         rate: u64,
         paused: bool,
     ) {
@@ -399,15 +420,16 @@ impl SpeedLog {
             let seconds = elapsed.as_secs_f64();
             tracing::info!(
                 target: "gp64::speed",
-                "guest {:.1} MHz of {:.1} MHz, host busy {:.0}%, {:.0}k runs/s ({:.0}k I/O service exits)",
+                "guest {:.1} MHz of {:.1} MHz, host busy {:.0}%, {:.0}k runs/s ({:.0}k I/O service exits), {:.1} new pictures/s",
                 cycle.saturating_sub(self.cycle) as f64 / seconds / 1e6,
                 rate as f64 / 1e6,
                 self.busy.as_secs_f64() / seconds * 100.0,
                 slices.total.saturating_sub(self.slices.total) as f64 / seconds / 1e3,
                 slices.io.saturating_sub(self.slices.io) as f64 / seconds / 1e3,
+                pictures.saturating_sub(self.pictures) as f64 / seconds,
             );
         }
-        *self = Self::new(now, cycle, slices);
+        *self = Self::new(now, cycle, slices, pictures);
     }
 }
 fn check_launch_recording(recording: &Recording) -> Result<(), String> {

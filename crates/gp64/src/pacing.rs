@@ -229,7 +229,14 @@ impl Capacity {
             busy: Duration::ZERO,
         }
     }
-    fn sample(&mut self, now: Duration, busy: Duration, cycle: u64, rate: u64) -> Option<u64> {
+    fn sample(
+        &mut self,
+        now: Duration,
+        busy: Duration,
+        cycle: u64,
+        rate: u64,
+        ceiling: u64,
+    ) -> Option<u64> {
         let gap = now.saturating_sub(self.last);
         self.last = now;
         if gap.saturating_sub(busy) > AUTO_STALL {
@@ -250,7 +257,7 @@ impl Capacity {
         // Keep 15% free for presentation, host scheduling and transient work.
         let capacity =
             (u128::from(cycles) * 850_000_000 / busy.as_nanos()).min(u128::from(AUTO_MAX)) as u64;
-        let next = sustainable_rate(capacity.min(rate.saturating_mul(5) / 4));
+        let next = sustainable_rate(capacity.min(rate.saturating_mul(5) / 4).min(ceiling));
         (next != rate).then_some(next)
     }
 }
@@ -264,6 +271,7 @@ pub struct Pacing {
     refill: Refill,
     paused: bool,
     capacity: Capacity,
+    ceiling: u64,
 }
 impl Pacing {
     pub fn new(rate: u64, now: Duration, cycle: u64) -> Self {
@@ -273,7 +281,12 @@ impl Pacing {
             refill: Refill::new(rate),
             paused: false,
             capacity: Capacity::new(now, cycle),
+            ceiling: AUTO_MAX,
         }
+    }
+    /// Caps the automatic rate, as a slower host would; for measurement.
+    pub fn set_ceiling(&mut self, ceiling: u64) {
+        self.ceiling = ceiling.clamp(AUTO_MIN, AUTO_MAX);
     }
     pub fn rate(&self) -> u64 {
         self.rate
@@ -298,7 +311,10 @@ impl Pacing {
         if self.paused {
             return 0;
         }
-        if let Some(rate) = self.capacity.sample(now, busy, cycle, self.rate) {
+        if let Some(rate) = self
+            .capacity
+            .sample(now, busy, cycle, self.rate, self.ceiling)
+        {
             self.rate = rate;
             self.rebase(now, cycle);
         }
@@ -407,6 +423,7 @@ mod tests {
                 Duration::from_nanos(1),
                 cycle,
                 rate,
+                AUTO_MAX,
             ) {
                 assert!(next <= rate * 5 / 4);
                 rate = next;
