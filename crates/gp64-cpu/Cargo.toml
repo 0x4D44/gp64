@@ -41,12 +41,6 @@ test-util = []
 # It also gates `instr_cache`, whose entries hold an `iced_x86::Instruction`.
 # That cache is read only by legacy-gated code, so a default build was
 # allocating 16,384 entries (~768 KiB) per `Cpu` and never reading them.
-#
-# Gating a field changes `Cpu`'s layout between configurations. That is safe
-# here and was checked rather than assumed: dyncore derives every `Cpu` offset
-# with `offset_of!` (239 sites), so both layouts are self-consistent, and the one
-# hardcoded offset constant in the tree describes a generated chain entry, not a
-# struct field.
 iced-interop = ["dep:iced-x86"]
 # Measurement-only x87 census counters, forwarded by the root interp-attrib
 # feature. Default builds compile the note sites to empty inline functions.

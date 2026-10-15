@@ -21,14 +21,12 @@ mod host {
 
     use super::*;
 
-    /// Proof token for raw benchmark-only x87 probes. Acquisition fails closed
-    /// if dyncore owns a resident guest context; the enclosing guard restores the
-    /// caller's control word after the measured region.
+    /// Proof token for raw benchmark-only x87 probes. The enclosing guard
+    /// restores the caller's control word after the measured region.
     struct BenchmarkX87Ownership;
 
     impl BenchmarkX87Ownership {
         fn acquire() -> Self {
-            gp64_cpu::host_x87_enter();
             Self
         }
 

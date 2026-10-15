@@ -511,17 +511,6 @@ impl Cpu {
         } else {
             memory.invalidate_tlb();
         }
-        // Task-switch attribution paired with Memory's broader translation
-        // epoch at the dynrec dispatch entry. The translation epoch drives link
-        // resets; this one distinguishes task-switch flushes from same-value
-        // MOV CR3, INVLPG, A20, and direct-mapping churn. Bumped HERE (not in
-        // the root's TaskSwitch* arms) so every task_switch caller — the three
-        // RunResult arms, INT-via-task-gate delivery, the error-path sites — is
-        // covered by construction, and bumped BEFORE the later fallible TSS
-        // reads so a mid-switch failure that already committed CR3 is still
-        // attributed. The Step-0 self-switch short-circuit returns earlier and
-        // correctly never bumps (no context change).
-        self.task_switch_epoch = self.task_switch_epoch.wrapping_add(1);
 
         // =====================================================================
         // Step 6: Load register state from new TSS

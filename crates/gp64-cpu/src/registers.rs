@@ -9,287 +9,6 @@ pub const CR0_EM: u32 = 1 << 2;
 pub const CR0_TS: u32 = 1 << 3;
 /// CR0 bits that affect x87 escape and FWAIT availability.
 pub const CR0_X87_CONTROL_MASK: u32 = CR0_MP | CR0_EM | CR0_TS;
-/// CPU state struct field offsets for JIT code generation.
-///
-/// Per HLD Section 15.4, these constants define the byte offsets of
-/// Registers struct fields. JIT-generated code uses these offsets
-/// to access guest registers via `[rbx + OFF_*]` addressing.
-///
-/// # Safety
-/// These offsets MUST match the actual struct layout. Compile-time
-/// assertions in the tests module verify correctness.
-pub mod cpu_offsets {
-    pub const OFF_EAX: i32 = std::mem::offset_of!(super::Registers, eax) as i32;
-    pub const OFF_EBX: i32 = std::mem::offset_of!(super::Registers, ebx) as i32;
-    pub const OFF_ECX: i32 = std::mem::offset_of!(super::Registers, ecx) as i32;
-    pub const OFF_EDX: i32 = std::mem::offset_of!(super::Registers, edx) as i32;
-    pub const OFF_ESI: i32 = std::mem::offset_of!(super::Registers, esi) as i32;
-    pub const OFF_EDI: i32 = std::mem::offset_of!(super::Registers, edi) as i32;
-    pub const OFF_EBP: i32 = std::mem::offset_of!(super::Registers, ebp) as i32;
-    pub const OFF_ESP: i32 = std::mem::offset_of!(super::Registers, esp) as i32;
-    pub const OFF_CS: i32 = std::mem::offset_of!(super::Registers, cs) as i32;
-    pub const OFF_DS: i32 = std::mem::offset_of!(super::Registers, ds) as i32;
-    pub const OFF_ES: i32 = std::mem::offset_of!(super::Registers, es) as i32;
-    pub const OFF_FS: i32 = std::mem::offset_of!(super::Registers, fs) as i32;
-    pub const OFF_GS: i32 = std::mem::offset_of!(super::Registers, gs) as i32;
-    pub const OFF_SS: i32 = std::mem::offset_of!(super::Registers, ss) as i32;
-    pub const OFF_EIP: i32 = std::mem::offset_of!(super::Registers, eip) as i32;
-    pub const OFF_CPL: i32 = std::mem::offset_of!(super::Registers, cpl) as i32;
-    pub const OFF_FLAGS: i32 = std::mem::offset_of!(super::Registers, flags) as i32;
-    pub const OFF_EFLAGS_HIGH: i32 = std::mem::offset_of!(super::Registers, eflags_high) as i32;
-    pub const OFF_CR0: i32 = std::mem::offset_of!(super::Registers, cr0) as i32;
-    pub const OFF_CR4: i32 = std::mem::offset_of!(super::Registers, cr4) as i32;
-    pub const OFF_AX: i32 = OFF_EAX;
-    pub const OFF_BX: i32 = OFF_EBX;
-    pub const OFF_CX: i32 = OFF_ECX;
-    pub const OFF_DX: i32 = OFF_EDX;
-    pub const OFF_CHAIN_COUNTER: i32 = std::mem::size_of::<super::Registers>() as i32;
-    pub const OFF_JIT_BAILOUT: i32 = OFF_CHAIN_COUNTER + 4;
-    pub const OFF_JIT_REGION_EXIT_REASON: i32 =
-        std::mem::offset_of!(crate::Cpu, jit_region_exit_reason) as i32;
-    pub const OFF_JIT_REGION_EXIT_SOURCE_LINEAR: i32 =
-        std::mem::offset_of!(crate::Cpu, jit_region_exit_source_linear) as i32;
-    pub const OFF_JIT_REGION_EXIT_TARGET_LINEAR: i32 =
-        std::mem::offset_of!(crate::Cpu, jit_region_exit_target_linear) as i32;
-    pub const OFF_JIT_REGION_INTERNAL_EDGES: i32 =
-        std::mem::offset_of!(crate::Cpu, jit_region_internal_edges) as i32;
-    pub const OFF_JIT_REP_CYCLES: i32 = std::mem::offset_of!(crate::Cpu, jit_rep_cycles) as i32;
-    pub const OFF_FLAG_SLOT0: i32 =
-        std::mem::offset_of!(super::Registers, flag_operand_slots) as i32;
-    pub const OFF_FLAG_SLOT1: i32 = OFF_FLAG_SLOT0 + 4;
-    pub const OFF_CYCLES: i32 = std::mem::offset_of!(crate::Cpu, cycles) as i32;
-    pub const OFF_TSC_WRITE_OFFSET: i32 = std::mem::offset_of!(crate::Cpu, tsc_write_offset) as i32;
-    const FPU_REL_REGS: i32 = 0;
-    const FPU_REL_STATUS_WORD: i32 = 128;
-    const FPU_REL_CONTROL_WORD: i32 = 130;
-    const FPU_REL_TAG_WORD: i32 = 132;
-    const FPU_REL_X87_SAVE_AREA: i32 = 150;
-    const FPU_BASE: i32 = std::mem::offset_of!(crate::Cpu, fpu) as i32;
-    pub const OFF_FPU_REGS: i32 = FPU_BASE + FPU_REL_REGS;
-    pub const OFF_FPU_STATUS_WORD: i32 = FPU_BASE + FPU_REL_STATUS_WORD;
-    pub const OFF_FPU_CONTROL_WORD: i32 = FPU_BASE + FPU_REL_CONTROL_WORD;
-    pub const OFF_FPU_TAG_WORD: i32 = FPU_BASE + FPU_REL_TAG_WORD;
-    /// FRSTOR/FNSAVE image used for DH ownership transfer.
-    pub const OFF_FPU_X87_SAVE_AREA: i32 = FPU_BASE + FPU_REL_X87_SAVE_AREA;
-    /// Emitted residency flag; set before FRSTOR and cleared after FNSAVE.
-    pub const OFF_FPU_HOST_RESIDENT: i32 =
-        std::mem::offset_of!(crate::Cpu, fpu_host_resident) as i32;
-    const _: () = assert!(std::mem::offset_of!(crate::Fpu, regs) == FPU_REL_REGS as usize);
-    const _: () =
-        assert!(std::mem::offset_of!(crate::Fpu, status_word) == FPU_REL_STATUS_WORD as usize);
-    const _: () =
-        assert!(std::mem::offset_of!(crate::Fpu, control_word) == FPU_REL_CONTROL_WORD as usize);
-    const _: () = assert!(std::mem::offset_of!(crate::Fpu, tag_word) == FPU_REL_TAG_WORD as usize);
-    const _: () =
-        assert!(std::mem::offset_of!(crate::Fpu, x87_save_area) == FPU_REL_X87_SAVE_AREA as usize);
-    const _: () = assert!(std::mem::size_of::<crate::Fpu>() == 368);
-    const _: () = assert!(std::mem::size_of::<std::cell::Cell<bool>>() == 1);
-    const _: () = assert!(std::mem::align_of::<std::cell::Cell<bool>>() == 1);
-    const SSE_BASE: i32 = std::mem::offset_of!(crate::Cpu, sse) as i32;
-    /// Guest `XMM0`; `XMMi` is at `OFF_SSE_XMM0 + 16 * i`.
-    pub const OFF_SSE_XMM0: i32 = SSE_BASE + std::mem::offset_of!(crate::SseState, xmm) as i32;
-    /// Guest MXCSR (u32).
-    pub const OFF_SSE_MXCSR: i32 = SSE_BASE + std::mem::offset_of!(crate::SseState, mxcsr) as i32;
-    /// The identity's MXCSR_MASK (u32): bits a guest MXCSR may legally hold.
-    pub const OFF_SSE_MXCSR_MASK: i32 =
-        SSE_BASE + std::mem::offset_of!(crate::SseState, mxcsr_mask) as i32;
-    const DBX_SIMD_BASE: i32 = std::mem::offset_of!(crate::Cpu, dbx_simd) as i32;
-    /// 16-byte memory-operand staging temp.
-    pub const OFF_DBX_SIMD_TEMP: i32 =
-        DBX_SIMD_BASE + std::mem::offset_of!(crate::DbxSimdScratch, temp) as i32;
-    /// Host MXCSR parked for the length of one float bracket.
-    pub const OFF_DBX_SIMD_HOST_MXCSR: i32 =
-        DBX_SIMD_BASE + std::mem::offset_of!(crate::DbxSimdScratch, host_mxcsr) as i32;
-    /// Sanitised guest MXCSR the bracket loads.
-    pub const OFF_DBX_SIMD_GUEST_MXCSR: i32 =
-        DBX_SIMD_BASE + std::mem::offset_of!(crate::DbxSimdScratch, guest_mxcsr) as i32;
-    const _: () = assert!(std::mem::align_of::<crate::Cpu>().is_multiple_of(16));
-    const _: () = assert!(OFF_SSE_XMM0 % 16 == 0);
-    const _: () = assert!(std::mem::size_of::<[u128; 8]>() == 128);
-    const _: () = assert!(OFF_DBX_SIMD_TEMP % 16 == 0);
-    const _: () = assert!(std::mem::size_of::<crate::DbxSimdScratch>() == 32);
-    pub const OFF_JIT_TLB_PTR: i32 = std::mem::offset_of!(crate::Cpu, jit_tlb_ptr) as i32;
-    pub const OFF_VGA_COMMIT_KIND: i32 = std::mem::offset_of!(crate::Cpu, vga_commit_kind) as i32;
-    pub const OFF_VGA_PLANE_MASK: i32 = std::mem::offset_of!(crate::Cpu, vga_plane_mask) as i32;
-    /// Offset of the emitted inline commit's VGA-progress counter
-    /// (MDD-BUG-CRUCIBLE-00150).
-    pub const OFF_VGA_NATIVE_WRITES: i32 =
-        std::mem::offset_of!(crate::Cpu, vga_native_writes) as i32;
-    pub const OFF_VGA_PLANES_FLAT_PTR: i32 =
-        std::mem::offset_of!(crate::Cpu, vga_planes_flat_ptr) as i32;
-    pub const OFF_VGA_WRITE_DELAY_CYCLES: i32 =
-        std::mem::offset_of!(crate::Cpu, vga_write_delay_cycles) as i32;
-    pub const OFF_JIT_RAM_PTR: i32 = std::mem::offset_of!(crate::Cpu, jit_ram_ptr) as i32;
-    pub const OFF_JIT_TLB_VIEW: i32 = std::mem::offset_of!(crate::Cpu, jit_tlb_view) as i32;
-    /// `Cpu.fpu` — base for the EXP-A018 native x87 fast path's shadow and
-    /// architectural-word addressing (compose with `fpu::shadow_offsets`).
-    pub const OFF_FPU: i32 = std::mem::offset_of!(crate::Cpu, fpu) as i32;
-    /// `Cpu.x87_retired` — the engagement counter the native path bumps.
-    pub const OFF_X87_RETIRED: i32 = std::mem::offset_of!(crate::Cpu, x87_retired) as i32;
-    /// `Cpu.mmx_retired` — the engagement counter native MMX legs bump.
-    pub const OFF_MMX_RETIRED: i32 = std::mem::offset_of!(crate::Cpu, mmx_retired) as i32;
-    /// `Cpu.mmx_profile` — non-null while the optional MMX histogram is active.
-    /// Native paths refuse to bypass the checked profiler while this is set.
-    pub const OFF_MMX_PROFILE: i32 = std::mem::offset_of!(crate::Cpu, mmx_profile) as i32;
-    /// `Cpu.cpu_type` — one `repr(u8)` discriminant byte; native MMX gates
-    /// test it against a capability mask built from `CpuType::ALL`.
-    pub const OFF_CPU_TYPE: i32 = std::mem::offset_of!(crate::Cpu, cpu_type) as i32;
-    const _: () = assert!(std::mem::size_of::<crate::CpuType>() == 1);
-    const _: () = assert!(
-        std::mem::size_of::<Option<Box<crate::MmxProfile>>>() == std::mem::size_of::<usize>()
-    );
-    pub const OFF_DYNCORE_CTX_PTR: i32 = std::mem::offset_of!(crate::Cpu, dyncore_ctx_ptr) as i32;
-    pub const OFF_DBX_DISPATCH_CTX: i32 = std::mem::offset_of!(crate::Cpu, dbx_dispatch_ctx) as i32;
-    pub const OFF_DBX_X87_LOAD_INLINE_HITS: i32 =
-        std::mem::offset_of!(crate::Cpu, dbx_x87_load_inline_hits) as i32;
-    pub const OFF_DBX_X87_STORE_INLINE_HITS: i32 =
-        std::mem::offset_of!(crate::Cpu, dbx_x87_store_inline_hits) as i32;
-    pub const OFF_DBX_BLOCK_ARRIVALS: i32 =
-        std::mem::offset_of!(crate::Cpu, dbx_block_arrivals) as i32;
-    pub const OFF_DBX_ARRIVAL_WEIGHTED_BYTES: i32 =
-        std::mem::offset_of!(crate::Cpu, dbx_arrival_weighted_bytes) as i32;
-    pub const OFF_DBX_VGA_STUB_CALLS: i32 =
-        std::mem::offset_of!(crate::Cpu, dbx_vga_stub_calls) as i32;
-    pub const OFF_DBX_VGA_STUB_PLANAR_HITS: i32 =
-        std::mem::offset_of!(crate::Cpu, dbx_vga_stub_planar_hits) as i32;
-    pub const OFF_DBX_VGA_STUB_CHAIN4_HITS: i32 =
-        std::mem::offset_of!(crate::Cpu, dbx_vga_stub_chain4_hits) as i32;
-    pub const OFF_DBX_WRITE_MAP_TABLE: i32 =
-        std::mem::offset_of!(crate::Cpu, dbx_write_map_table) as i32;
-    pub const OFF_DBX_WATCHED_INLINE_STORES: i32 =
-        std::mem::offset_of!(crate::Cpu, dbx_watched_inline_stores) as i32;
-    pub const OFF_DYNCORE_BUDGET: i32 = std::mem::offset_of!(crate::Cpu, dyncore_budget) as i32;
-    pub const OFF_DYNCORE_CHAIN_RETIRED: i32 =
-        std::mem::offset_of!(crate::Cpu, dyncore_chain_retired) as i32;
-    pub const OFF_DYNCORE_LINK_FROM_EIP: i32 =
-        std::mem::offset_of!(crate::Cpu, dyncore_link_from_eip) as i32;
-    /// γ2.2 conditional-`Jcc` LINKING: the slot index (`0` taken / `1` not-taken)
-    /// of the edge that bounced unresolved, written by the `Jcc` tail beside
-    /// `OFF_DYNCORE_LINK_FROM_EIP` so the dispatcher fills the correct slot.
-    pub const OFF_DYNCORE_LINK_FROM_SLOT: i32 =
-        std::mem::offset_of!(crate::Cpu, dyncore_link_from_slot) as i32;
-    /// γ2.4 near-`RET` LINKING: the RET-miss flag a linking `RET` block's tail sets
-    /// to `1` (via `mov dword [rdi + OFF], 1`) before returning, so the dispatcher
-    /// routes to the RET-cache fill/lookup rather than the outbound-slot fill. A
-    /// `u32` (not `u8`) so the tail can write it with the existing
-    /// `mov dword [rdi+OFF], imm` emitter — no byte-store primitive needed.
-    pub const OFF_DYNCORE_RET_MISS: i32 = std::mem::offset_of!(crate::Cpu, dyncore_ret_miss) as i32;
-    /// γ2.5 inline RET-cache HIT: the baked address of the FROM (RET) block's inline
-    /// ret-cache cell, written by the RET tail's miss path beside
-    /// `OFF_DYNCORE_RET_MISS` so `resolve_ret` can fill that exact cell without a
-    /// second page-walk for the FROM identity. A `usize`-wide carrier (the raw cell
-    /// pointer); only read when `dyncore_ret_miss != 0`.
-    pub const OFF_DYNCORE_RET_FROM_CELL: i32 =
-        std::mem::offset_of!(crate::Cpu, dyncore_ret_from_cell) as i32;
-    /// γ2.5 inline RET-cache HIT observability: the per-dispatch count of native
-    /// inline RET HITs. The emitted HIT path bumps it (`add qword [rdi+OFF], 1`)
-    /// before its `jmp cached_entry`; `DynCore::run` drains it after the chain
-    /// returns (an inline HIT never re-enters `run`, so this is the only proof a HIT
-    /// happened).
-    pub const OFF_DYNCORE_RET_INLINE_HITS: i32 =
-        std::mem::offset_of!(crate::Cpu, dyncore_ret_inline_hits) as i32;
-    /// Offset of `dyncore_slow_linear` — the faulting guest linear address the
-    /// native memory-op slow stub captures (`mov [rdi + OFF_DYNCORE_SLOW_LINEAR],
-    /// eax`) so the host can warm the software TLB for that page under CR0.PG=0.
-    pub const OFF_DYNCORE_SLOW_LINEAR: i32 =
-        std::mem::offset_of!(crate::Cpu, dyncore_slow_linear) as i32;
-    /// Sentinel for [`OFF_DYNCORE_LINK_FROM_EIP`] meaning "no link bounce this
-    /// dispatch". A linking `JMP` block cannot legally start at `0xFFFF_FFFF`
-    /// (its bytes would wrap past the 4 GiB boundary, which the single-physical-
-    /// page block builder never emits), so this value is unambiguous.
-    pub const DYNCORE_LINK_FROM_NONE: u32 = u32::MAX;
-    pub const OFF_SMC_HAS_CODE_PAGES: i32 =
-        std::mem::offset_of!(crate::Cpu, smc_has_code_pages) as i32;
-    pub const OFF_HOST_FP_ENV_DEFAULT: i32 =
-        std::mem::offset_of!(crate::Cpu, host_fp_env_default) as i32;
-    pub const OFF_WAKES_PENDING: i32 = std::mem::offset_of!(crate::Cpu, wakes_pending) as i32
-        + std::mem::offset_of!(crate::WakesPendingFlag, flag) as i32;
-    const DBX_SCRATCH_BASE: i32 = std::mem::offset_of!(crate::Cpu, dbx_scratch) as i32;
-    pub const OFF_DBX_NEWESP: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, newesp) as i32;
-    pub const OFF_DBX_EA: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, ea) as i32;
-    pub const OFF_DBX_STACK: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, stack) as i32;
-    pub const OFF_DBX_CYCLES_REMAINING: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, cycles_remaining) as i32;
-    pub const OFF_DBX_NON_RETIRED_CYCLES: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, non_retired_cycles) as i32;
-    pub const OFF_DBX_TMPB: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, tmpb) as i32;
-    pub const OFF_DBX_TMPW: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, tmpw) as i32;
-    pub const OFF_DBX_TMPD: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, tmpd) as i32;
-    pub const OFF_DBX_SHIFT: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, shift) as i32;
-    pub const OFF_DBX_EXIT: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, exit) as i32;
-    pub const OFF_DBX_PAGING_STATUS: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, paging_status) as i32;
-    pub const OFF_DBX_HELPER_STATUS: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, helper_status) as i32;
-    pub const OFF_DBX_RESTART_FLAGS: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, restart_flags) as i32;
-    pub const OFF_DBX_RUNNING_BLOCK_ID: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, running_block_id) as i32;
-    pub const OFF_DBX_PENDING_INDIRECT_CELL: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, pending_indirect_cell) as i32;
-    pub const OFF_DBX_HOST_CALL_GATEWAY: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, host_call_gateway) as i32;
-    /// D1 route split: the D5 VERIFIED tail-jump gateway entry — the default
-    /// route for gateway-routed helpers outside the bracketed class.
-    pub const OFF_DBX_HOST_CALL_GATEWAY_VERIFIED: i32 = DBX_SCRATCH_BASE
-        + std::mem::offset_of!(crate::DbxScratch, host_call_gateway_verified) as i32;
-    /// Unit 2b return-address stack. Base of the sixteen return-cell
-    /// addresses; the emitted tails index it as `[rbp + top*8 + OFF_DBX_RAS]`.
-    pub const OFF_DBX_RAS: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, ras) as i32;
-    /// Unit 2b-ext: base of the sixteen predicted return EIPs, indexed
-    /// `[rbp + top*4 + OFF_DBX_RAS_EIP]` by the emitted push.
-    pub const OFF_DBX_RAS_EIP: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, ras_eip) as i32;
-    /// Unit 2b return-address stack top (a slot index, not a byte offset).
-    pub const OFF_DBX_RAS_TOP: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, ras_top) as i32;
-    /// Memo generation the return-address stack's pointers were published
-    /// under; read only by the dispatcher, never by emitted code.
-    pub const OFF_DBX_RAS_GEN: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, ras_gen) as i32;
-    /// Unit 2b-ext census: native `CALL r/m32` executions.
-    pub const OFF_DBX_INDIRECT_CALLS: i32 =
-        DBX_SCRATCH_BASE + std::mem::offset_of!(crate::DbxScratch, indirect_calls) as i32;
-    pub const OFF_CS_CACHE_BASE: i32 = std::mem::offset_of!(super::Registers, cs_cache) as i32
-        + std::mem::offset_of!(super::SegmentCache, base) as i32;
-    pub const OFF_DS_CACHE_BASE: i32 = std::mem::offset_of!(super::Registers, ds_cache) as i32
-        + std::mem::offset_of!(super::SegmentCache, base) as i32;
-    pub const OFF_ES_CACHE_BASE: i32 = std::mem::offset_of!(super::Registers, es_cache) as i32
-        + std::mem::offset_of!(super::SegmentCache, base) as i32;
-    pub const OFF_SS_CACHE_BASE: i32 = std::mem::offset_of!(super::Registers, ss_cache) as i32
-        + std::mem::offset_of!(super::SegmentCache, base) as i32;
-    pub const OFF_FS_CACHE_BASE: i32 = std::mem::offset_of!(super::Registers, fs_cache) as i32
-        + std::mem::offset_of!(super::SegmentCache, base) as i32;
-    pub const OFF_GS_CACHE_BASE: i32 = std::mem::offset_of!(super::Registers, gs_cache) as i32
-        + std::mem::offset_of!(super::SegmentCache, base) as i32;
-    pub const OFF_CS_CACHE_EFFECTIVE_LIMIT: i32 = std::mem::offset_of!(super::Registers, cs_cache)
-        as i32
-        + std::mem::offset_of!(super::SegmentCache, cached_effective_limit) as i32;
-    pub const OFF_DS_CACHE_EFFECTIVE_LIMIT: i32 = std::mem::offset_of!(super::Registers, ds_cache)
-        as i32
-        + std::mem::offset_of!(super::SegmentCache, cached_effective_limit) as i32;
-    pub const OFF_ES_CACHE_EFFECTIVE_LIMIT: i32 = std::mem::offset_of!(super::Registers, es_cache)
-        as i32
-        + std::mem::offset_of!(super::SegmentCache, cached_effective_limit) as i32;
-    pub const OFF_SS_CACHE_EFFECTIVE_LIMIT: i32 = std::mem::offset_of!(super::Registers, ss_cache)
-        as i32
-        + std::mem::offset_of!(super::SegmentCache, cached_effective_limit) as i32;
-    pub const OFF_FS_CACHE_EFFECTIVE_LIMIT: i32 = std::mem::offset_of!(super::Registers, fs_cache)
-        as i32
-        + std::mem::offset_of!(super::SegmentCache, cached_effective_limit) as i32;
-    pub const OFF_GS_CACHE_EFFECTIVE_LIMIT: i32 = std::mem::offset_of!(super::Registers, gs_cache)
-        as i32
-        + std::mem::offset_of!(super::SegmentCache, cached_effective_limit) as i32;
-}
 pub const CR4_VME: u32 = 1 << 0;
 pub const CR4_PVI: u32 = 1 << 1;
 /// CR4.TSD: restrict RDTSC/RDTSCP to CPL 0 when set.
@@ -325,8 +44,7 @@ pub struct SegmentCache {
     pub limit: u32,
     /// Pre-computed effective limit (granularity-applied).
     /// Always equals `if granularity { (limit << 12) | 0xFFF } else { limit }`.
-    /// Cached to avoid recomputing on every memory access and for JIT codegen
-    /// to emit runtime comparisons via `OFF_*_CACHE_EFFECTIVE_LIMIT`.
+    /// Retained for descriptor validation and maintained by the cache setters.
     pub cached_effective_limit: u32,
     pub access: u8,
     pub flags: u8,
@@ -497,8 +215,7 @@ impl SegmentCache {
     /// callers do not need to keep `cached_effective_limit` in sync when
     /// mutating those fields directly. The cached field is still maintained
     /// (via `set_limit` / `set_granularity` / `recompute_effective_limit`)
-    /// for JIT-emitted code, which reads it through `OFF_*_CACHE_EFFECTIVE_LIMIT`
-    /// as a single memory load. Recomputing here is cheap (one branch on
+    /// for descriptor validation. Recomputing here is cheap (one branch on
     /// `granularity`) and ensures interpreter and test code paths see the
     /// authoritative value even when fixtures pre-date the cache invariant.
     #[inline(always)]
@@ -535,11 +252,6 @@ fn default_dr7() -> u32 {
     0x0000_0400
 }
 /// CPU register file
-///
-/// Layout is `#[repr(C)]` for deterministic field ordering, enabling
-/// JIT code to access registers via fixed offsets. The offsets are
-/// defined in [`cpu_offsets`] and verified by compile-time assertions.
-#[repr(C)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Registers {
     pub eax: u32,
@@ -602,7 +314,6 @@ pub struct Registers {
     pub fs_cache: SegmentCache,
     pub gs_cache: SegmentCache,
     pub ss_cache: SegmentCache,
-    pub flag_operand_slots: [u32; 2],
 }
 /// Generate 8-bit register getter/setter pairs from a 32-bit backing register.
 ///
@@ -679,7 +390,6 @@ impl Registers {
             fs_cache: SegmentCache::real_mode(0),
             gs_cache: SegmentCache::real_mode(0),
             ss_cache: SegmentCache::real_mode(0),
-            flag_operand_slots: [0, 0],
         }
     }
     #[inline]
@@ -1263,11 +973,6 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(cache.effective_limit(), 0x100);
-    }
-    #[test]
-    fn test_flag_operand_slots_default() {
-        let regs = Registers::new();
-        assert_eq!(regs.flag_operand_slots, [0, 0]);
     }
     #[test]
     fn test_set_eip() {

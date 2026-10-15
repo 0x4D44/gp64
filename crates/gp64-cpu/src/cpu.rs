@@ -12,116 +12,12 @@ use crate::sse_decode_cache::SseInstrCache;
 use crate::{CachedInstruction, INSTR_CACHE_SIZE};
 use crate::{CpuType, ExecutionRingBuffer};
 use gp64_types::FixedVec;
-use std::cell::Cell;
 #[cfg(test)]
 use std::collections::HashMap;
 use std::fmt;
-use std::marker::PhantomData;
-use std::rc::Rc;
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU32, Ordering};
-thread_local! {
-    #[doc =
-    " CPU whose guest x87 state may currently live in this thread's host x87 stack."]
-    #[doc = ""] #[doc =
-    " This pointer spans the whole dyncore dispatch. Under native compiled"] #[doc =
-    " residency posture (HLD 2026.08.01 D2), residency spans generated"] #[doc =
-    " native chains AND all of the dispatch's Rust (link, compile,"] #[doc =
-    " classification, outcome), released only by the root-exit teardown in"] #[doc =
-    " `run_with_io`'s tail. `fpu_host_resident` remains the source of truth"] #[doc =
-    " for whether the ownership transfer has actually happened."] static CURRENT_DH_CPU :
-    Cell <* const Cpu > = const { Cell::new(std::ptr::null()) };
-}
-/// RAII installation of the CPU whose DH batch is running on this thread.
-///
-/// The `Rc` marker deliberately makes the guard `!Send` and `!Sync`: dropping it
-/// on another thread would clear the wrong thread-local slot.
-#[doc(hidden)]
-pub struct DhCpuInstallGuard {
-    cpu: *const Cpu,
-    _not_send_or_sync: PhantomData<Rc<()>>,
-}
-#[cold]
-#[inline(never)]
-fn abort_dh_residency_violation(site: &str) -> ! {
-    use std::io::Write;
-    let mut stderr = std::io::stderr();
-    let _ = stderr.write_all(b"DH residency violation: ");
-    let _ = stderr.write_all(site.as_bytes());
-    let _ = stderr.write_all(b"\n");
-    let _ = stderr.flush();
-    std::process::abort()
-}
-impl Drop for DhCpuInstallGuard {
-    fn drop(&mut self) {
-        CURRENT_DH_CPU.with(|slot| {
-            let current = slot.get();
-            if current != self.cpu
-                || current.is_null()
-                || unsafe { (*current).fpu_host_resident.get() }
-            {
-                abort_dh_residency_violation(
-                    "DhCpuInstallGuard::drop - foreign/null slot or residency still \
-                     set at batch end (an in-window panic unwinding here is a \
-                     declared process abort under L3)",
-                );
-            }
-            slot.set(std::ptr::null());
-        });
-    }
-}
-/// Installs the CPU owning the current thread's dyncore DH batch.
-///
-/// # Safety
-///
-/// `cpu` must be non-null and remain valid until the returned guard is dropped.
-/// The guard must outlive every generated-code entry in the batch. If generated
-/// code establishes host-x87 residency, it must FNSAVE and clear
-/// `fpu_host_resident` before dropping the guard.
-#[doc(hidden)]
-pub unsafe fn install_current_dh_cpu(cpu: *const Cpu) -> DhCpuInstallGuard {
-    if cpu.is_null() || unsafe { (*cpu).fpu_host_resident.get() } {
-        abort_dh_residency_violation(
-            "install_current_dh_cpu - CPU null or already host-resident at install",
-        );
-    }
-    CURRENT_DH_CPU.with(|slot| {
-        if !slot.get().is_null() {
-            abort_dh_residency_violation(
-                "install_current_dh_cpu - another CPU already installed on this thread",
-            );
-        }
-        slot.set(cpu);
-    });
-    DhCpuInstallGuard {
-        cpu,
-        _not_send_or_sync: PhantomData,
-    }
-}
-/// Returns the CPU installed for this thread's current DH batch, or null.
-#[doc(hidden)]
-#[inline]
-pub fn current_dh_cpu() -> *const Cpu {
-    CURRENT_DH_CPU.with(Cell::get)
-}
-/// Fails closed before Rust code transiently uses the host x87 unit while guest
-/// x87 state is resident there.
-///
-/// This is deliberately always enabled and aborts rather than panicking: unwinding
-/// through generated code has no unwind metadata and could resume with guest x87
-/// values still live.
-#[doc(hidden)]
-#[inline]
-pub fn host_x87_enter() {
-    let cpu = current_dh_cpu();
-    if !cpu.is_null() && unsafe { (*cpu).fpu_host_resident.get() } {
-        abort_dh_residency_violation(
-            "host_x87_enter - instrumented Rust x87 site entered while guest \
-             x87 state is host-resident",
-        );
-    }
-}
 /// Saves the incoming host x87 control word and restores it on drop.
 ///
 /// The host x86-64 calling conventions preserve the x87 control word across
@@ -133,20 +29,16 @@ pub fn host_x87_enter() {
 /// loads a whole guest environment on purpose, and putting the old *environment*
 /// back would erase the condition-code update it exists to make.
 ///
-/// `Drop` performs one `FLDCW` and cannot panic, so it never unwinds through
-/// generated code — the same constraint that makes `host_x87_enter` abort rather
-/// than panic.
+/// `Drop` performs one `FLDCW` and cannot panic.
 #[doc(hidden)]
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 pub struct HostX87Guard {
     #[cfg(target_arch = "x86_64")]
     saved_cw: u16,
 }
-/// Enter an instrumented host-x87 site: trip the residency guard, then capture
-/// the caller's control word so it can be restored on exit.
+/// Capture the caller's x87 control word so it can be restored on exit.
 ///
-/// Replaces a bare `host_x87_enter()` at every inline-asm site. The inventory
-/// oracle in `x87_ops.rs` (`every_x87_asm_site_enters_host_guard`) reads every
+/// The inventory oracle in `x87_ops.rs` (`every_x87_asm_site_enters_host_guard`) reads every
 /// `.rs` under the crate's `src/` and `benches/` — no hand-written file list —
 /// and fails any inline-asm block that is neither preceded by this call nor
 /// marked `x87-inventory-exempt` with its reason, so neither a new site nor a
@@ -155,7 +47,6 @@ pub struct HostX87Guard {
 #[inline(always)]
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 pub fn host_x87_enter_guarded() -> HostX87Guard {
-    host_x87_enter();
     #[cfg(target_arch = "x86_64")]
     {
         let mut saved_cw: u16 = 0;
@@ -504,31 +395,6 @@ pub struct CpuSnapshot {
     pub last_interrupt_had_error_code: bool,
     pub dispatching_exception: Option<u8>,
     pub dos_extender_active: bool,
-    /// JIT chain counter (restored to ensure budget continuity)
-    pub chain_counter: i32,
-    /// JIT bailout flag
-    pub jit_bailout: u32,
-    /// JIT region side-exit reason. Defaulted for snapshots produced before
-    /// region native-residency support.
-    #[serde(default)]
-    pub jit_region_exit_reason: u32,
-    /// Linear address of the branch/control instruction that produced the last
-    /// region side exit. Diagnostic scratch, defaulted for older snapshots.
-    #[serde(default)]
-    pub jit_region_exit_source_linear: u32,
-    /// Linear target address materialized by the last region side exit.
-    /// Diagnostic scratch, defaulted for older snapshots.
-    #[serde(default)]
-    pub jit_region_exit_target_linear: u32,
-    /// Number of native internal region member edges taken by the last region
-    /// entry. Defaulted for snapshots produced before region native-residency
-    /// support.
-    #[serde(default)]
-    pub jit_region_internal_edges: u32,
-    /// JIT REP cycle accumulator
-    pub jit_rep_cycles: u64,
-    /// JIT flag operand spill slots
-    pub flag_operand_slots: [u32; 2],
     /// Decoded REP bytes retained across a scheduler-only yield.
     #[serde(default)]
     pub rep_fetch_latch: RepFetchLatch,
@@ -651,137 +517,6 @@ impl CpuSnapshot {
         Ok(())
     }
 }
-/// Runtime homes used by the parallel native compiled execution path.
-///
-/// These values are compiler/dispatcher scratch rather than architectural CPU
-/// state. They are deliberately absent from [`CpuSnapshot`] and are cleared on
-/// reset/restore so a snapshot can never revive native-run bookkeeping.
-#[repr(C)]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct DbxScratch {
-    pub newesp: u32,
-    pub ea: u32,
-    pub stack: u32,
-    pub cycles_remaining: i32,
-    /// Guest cycles charged in the current native dispatch that retire no
-    /// instruction: VGA aperture store delay, and the per-element string-op
-    /// surcharge above one cycle (`REP_MOVS_STOS_ELEMENT_CHARGED_CYCLES - 1`
-    /// for each committed MOVS/STOS element).
-    pub non_retired_cycles: u64,
-    pub tmpb: u32,
-    pub tmpw: u32,
-    pub tmpd: u32,
-    pub shift: u32,
-    pub exit: u32,
-    pub paging_status: u32,
-    pub helper_status: u32,
-    /// Exact parked arithmetic-flags image at a faultable compiled RMW instruction.
-    ///
-    /// A checked store can fail after the host ALU has computed the prospective
-    /// result. Its cold edge restores this image so replay observes the flags
-    /// from before the non-retired instruction.
-    pub restart_flags: u32,
-    pub running_block_id: u64,
-    /// Address of the indirect-exit cell whose guard just missed, published
-    /// by the RET / register-CALL/JMP tail on its `BR_Normal` path so the
-    /// dispatcher can fill it once the target block is resolved; zero when
-    /// the last native return was not such a miss.
-    pub pending_indirect_cell: usize,
-    /// Engine-lifetime compiled host-ABI gateway loaded by generated call sites.
-    ///
-    /// Since the D1 route split (native compiled residency posture HLD, 2026.08.01)
-    /// this is the BRACKETED entry — the teardown/call/establish park used
-    /// only by the nested-interpreter/post-fault helper class.
-    ///
-    /// This is runtime/compiler scratch rather than snapshot state. The compiled core
-    /// republishes it before native dispatch, just like the JIT RAM/TLB bases.
-    pub host_call_gateway: usize,
-    /// The D5 VERIFIED tail-jump gateway entry — the DEFAULT route for every
-    /// other gateway-routed helper class (D1 route split). Its resident arm
-    /// counts the entry and tail-jumps (plain) or runs the FNSAVE-image
-    /// verify bracket (debug/canary-armed). Republished alongside
-    /// `host_call_gateway`.
-    pub host_call_gateway_verified: usize,
-    /// Unit 2b return-address stack: [`DBX_RAS_SLOTS`] return-cell addresses,
-    /// written by a folded near `call rel32` block's link ending and read by
-    /// the next near `ret` tail, so a return is predicted from the dynamic
-    /// call that produced it rather than from the return site's own history.
-    /// A zero entry means "no prediction"; the tail then falls back to the
-    /// unit 2a per-block indirect cell.
-    pub ras: [usize; DBX_RAS_SLOTS],
-    /// Unit 2b-ext: the return EIP each [`Self::ras`] slot predicts, stored
-    /// by the same emitted push. Plain data, so Rust can validate a pop
-    /// ([`Self::ras_pop_matching`]) without dereferencing a cell pointer
-    /// whose owner it cannot prove live.
-    pub ras_eip: [u32; DBX_RAS_SLOTS],
-    /// Next free slot in [`Self::ras`], modulo its length. A CALL writes
-    /// `ras[ras_top]` and advances; a RET retreats and reads. One pop per RET
-    /// regardless of the outcome, so a stack desynchronised by a longjmp, a
-    /// guest thread switch or a call executed outside native code
-    /// self-corrects within [`DBX_RAS_SLOTS`] returns.
-    pub ras_top: u32,
-    /// The dispatch-memo generation [`Self::ras`]'s pointers were published
-    /// under. The compiled core republishes its live generation here before every
-    /// native dispatch and zeroes the stack when the value moved; every route
-    /// that frees a block bumps the generation before the deferred free, so no
-    /// entry here can name a cell that has gone away.
-    pub ras_gen: u64,
-    /// 32-bit `CALL r/m32` endings executed natively (unit 2b-ext census):
-    /// the emitted indirect-call tail adds one. The compiled core drains it into
-    /// its counters at each dispatch return.
-    pub indirect_calls: u64,
-}
-impl DbxScratch {
-    /// Consume the top return-address-stack entry when it predicts a return
-    /// to `return_eip`; returns whether it did.
-    ///
-    /// Unit 2b-ext: a host-service stub that completes a guest call (stdcall
-    /// cleanup, EIP = the caller's return address) performs the RET the
-    /// guest never executes, so a native CALL's push must be consumed here or
-    /// every live outer frame would pop one level too high. The match makes
-    /// the pop exact: a call the interpreter executed pushed nothing, and
-    /// its completion must not consume an outer frame's entry. A zero slot
-    /// (cleared at a generation change) is never consumed. Only the index
-    /// moves, which is always safe: the `ras_gen` clear, not this, keeps the
-    /// slots' pointers valid.
-    pub fn ras_pop_matching(&mut self, return_eip: u32) -> bool {
-        let slot = self.ras_top.wrapping_sub(1) & (DBX_RAS_SLOTS as u32 - 1);
-        let index = slot as usize;
-        if self.ras[index] == 0 || self.ras_eip[index] != return_eip {
-            return false;
-        }
-        self.ras_top = slot;
-        true
-    }
-}
-/// Depth of [`DbxScratch::ras`]. A power of two: the emitted CALL and RET
-/// tails wrap the top with a single `and` against `DBX_RAS_SLOTS - 1`.
-pub const DBX_RAS_SLOTS: usize = 16;
-/// Non-architectural SIMD scratch for native SSE (HLD 2026.09.27 U1).
-///
-/// Generated code executes guest SSE on the host's own SSE unit against the in-memory
-/// `Cpu::sse` homes. A memory operand is fetched before any host XMM register
-/// is loaded: the inline fast leg copies it straight into a host register,
-/// while the checked cold helper writes it here and the site reloads it after
-/// the join, so no host XMM value is ever live across a helper call.
-/// Stores stage their bytes here before the checked-write helper runs.
-///
-/// `host_mxcsr` holds the host's MXCSR for the length of one float bracket
-/// (`stmxcsr` before loading the guest's word, `ldmxcsr` after the op).
-/// `guest_mxcsr` holds the sanitised guest word the bracket loads: the guest
-/// word ANDed with the identity's `mxcsr_mask`, so a savestate cannot hand the
-/// host `LDMXCSR` a reserved bit (which would #GP the emulator process).
-///
-/// 16-byte aligned so a legacy-SSE packed instruction may address `temp`
-/// directly. Not snapshot state: nothing here outlives one instruction.
-#[repr(C, align(16))]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DbxSimdScratch {
-    pub temp: [u8; 16],
-    pub host_mxcsr: u32,
-    pub guest_mxcsr: u32,
-}
-impl Cpu {}
 /// Operand form retired by one baseline MMX instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MmxOperandKind {
@@ -794,7 +529,7 @@ pub enum MmxOperandKind {
 }
 /// Opt-in MMX instruction-mix diagnostics.
 ///
-/// The interpreter and portable dynrec update this only when a caller installs
+/// The interpreter updates this only when a caller installs
 /// it in [`Cpu::mmx_profile`]. Production execution leaves the option empty,
 /// avoiding histogram writes on the hot path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -857,37 +592,9 @@ impl MmxProfile {
 /// CPU state
 ///
 /// This struct contains all CPU state needed for instruction execution.
-/// It is `#[repr(C)]` to ensure deterministic field layout for JIT code.
-#[repr(C)]
 pub struct Cpu {
     /// Register file
     pub regs: Registers,
-    /// JIT block chaining instruction budget (decremented by block instruction count)
-    /// When zero or negative, exit chain back to dispatch loop for maintenance
-    pub chain_counter: i32,
-    /// JIT bailout flag: set to 1 by emit_bailout(), cleared before JIT execution.
-    /// Used to detect mid-block bailouts for correct instruction counting.
-    pub jit_bailout: u32,
-    /// JIT region side-exit reason id, set by region side-exit stubs.
-    pub jit_region_exit_reason: u32,
-    /// Linear address of the branch/control instruction that produced the last
-    /// region side exit.
-    pub jit_region_exit_source_linear: u32,
-    /// Linear target address materialized by the last region side exit.
-    pub jit_region_exit_target_linear: u32,
-    /// Internal native member edges taken by the current region entry.
-    pub jit_region_internal_edges: u32,
-    /// JIT REP string instruction cycle accumulator.
-    /// JIT-compiled REP MOVSW/STOSW/etc. add `CX * per_iter_cycles` here at runtime.
-    /// The emulator reads this after JIT execution to get accurate cycle counts,
-    /// since the static `cycle_count` on CompiledBlock only accounts for 1 iteration.
-    /// u64 to avoid overflow: in 32-bit PM mode, ECX can be large enough that
-    /// ECX * cycles_per_iter exceeds u32::MAX.
-    pub jit_rep_cycles: u64,
-    /// JIT flag operand spill slots for lazy flag evaluation (Stage 0)
-    /// Used to store original operand values before flag-modifying instructions
-    /// so flags can be reconstructed later if needed.
-    pub flag_operand_slots: [u32; 2],
     /// Number of cycles executed
     pub cycles: u64,
     /// Signed bias added to the SCALED TSC whenever the architectural TSC
@@ -967,13 +674,6 @@ pub struct Cpu {
     /// Byte-validated runtime decode cache for the sparse legacy SIMD path.
     /// It is not architectural state and is deliberately excluded from saves.
     pub sse_decode_cache: SseInstrCache,
-    /// Runtime-only DH ownership poison: guest x87 state currently lives in the
-    /// host x87 stack rather than `fpu`.
-    ///
-    /// Generated code writes this through a build-checked offset. It is
-    /// intentionally absent from `CpuSnapshot` because snapshots require a spill
-    /// back to `fpu` first.
-    pub fpu_host_resident: Cell<bool>,
     /// MMX instructions retired. Not architectural state — it exists so a
     /// measurement can prove the guest actually took an MMX path rather than
     /// inferring it from a wall-clock delta. A plain counter, not an atomic:
@@ -1053,287 +753,6 @@ pub struct Cpu {
     ret_guard_stack: FixedVec<RetGuardEntry, 1024>,
     /// DOS protected-mode extender active flag.
     pub dos_extender_active: bool,
-    /// Pointer to the TLB entries array for JIT inline TLB lookups.
-    /// Set in execute_block() before the trampoline call.
-    /// JIT code loads this via `mov rdx, [rbx + OFF_JIT_TLB_PTR]`.
-    pub jit_tlb_ptr: usize,
-    /// EXP-033 Stage-2 VGA inline-commit descriptor. Republished from `Memory` every
-    /// dispatch in `DynCore::run` (like `jit_tlb_ptr` — a checkpoint restore can move
-    /// `planes_flat`). The emitted gate-SET store fast path reads these via `RDI`.
-    /// `0` = not armed (disables the inline path), `1` = Planar, `2` = Chain4.
-    pub vga_commit_kind: u8,
-    /// Live VGA Map Mask (SR2) for the inline commit's plane selection.
-    pub vga_plane_mask: u8,
-    /// Base pointer to `Memory::planes_flat` for the inline VGA commit.
-    pub vga_planes_flat_ptr: usize,
-    /// Scheduler cycles charged for one byte transaction through the legacy
-    /// VGA aperture. Published by the root before native dispatch.
-    pub vga_write_delay_cycles: u32,
-    /// Count of VGA bytes committed by the EMITTED inline corridor since the
-    /// last fold into `Memory`.
-    ///
-    /// The inline commit writes `planes_flat`/`ram` straight from generated
-    /// code, so it cannot call `Memory::increment_video_write_count`. Without
-    /// this the watchdog saw no VGA progress at all while native code was
-    /// rendering, and terminated the run as `NoVgaWrites`
-    /// (MDD-BUG-CRUCIBLE-00150). A plain (non-atomic) counter in the CPU frame
-    /// costs one `add qword [rbx+disp], 1` per commit; `publish_vga_mirrors`
-    /// folds and clears it every dispatch.
-    pub vga_native_writes: u64,
-    /// Pointer to the dyncore runtime context (`DynCoreCtx`) for native
-    /// gate-set SMC checked stores (F2b-4b-ii-β2b).
-    ///
-    /// Set in `DynCore::run` every dispatch, MIRRORING [`jit_tlb_ptr`] exactly:
-    /// a native gate-SET `MOV [m], r32` store loads this via
-    /// `mov r10, [rdi + OFF_DYNCORE_CTX_PTR]` (with `RDI` = the pinned `Cpu*`)
-    /// so it can CALL the `dyncore_smc_store_trampoline` without any prologue
-    /// spill or every-exit teardown. The interpreter never reads or writes it
-    /// (no behavior change there); it is plain `0` outside a dyncore dispatch.
-    pub dyncore_ctx_ptr: usize,
-    /// Pointer to the live compiled dispatch context (`dbx_runtime`'s
-    /// `DbxDispatchContext`) for one synchronous `DbxCore::run` chain.
-    ///
-    /// GUARD-OWNED, exclusively: `DbxDispatchGuard::install` publishes it
-    /// (asserting it was 0) and the guard's `Drop` nulls it (asserting it was
-    /// unchanged) — never ad-hoc code at a call site, so the DH movers'
-    /// null-abort tripwire can never degrade into a dangling-pointer read
-    /// after the run's heap context is dropped (x87 load panel F3). Emitted
-    /// x87 load sites pass it as arg1 via
-    /// `mov <arg1>, [rbp + OFF_DBX_DISPATCH_CTX]`, replacing the per-call
-    /// thread-local lookup on the hottest x87 path in the engine. Plain `0`
-    /// outside a compiled dispatch.
-    pub dbx_dispatch_ctx: usize,
-    /// METRICS_ON (debug_assertions or the dyncore's `codegen-metrics`
-    /// feature) hit counter for the emitted x87 load inline fast leg:
-    /// generated code bumps it with `add qword [rbp + OFF], 1` on every probe
-    /// HIT. Production release builds emit no increment, so this stays 0
-    /// there — it is the smoke-test engagement instrument, not the citable
-    /// A/B evidence (that is the always-on `dh_load_decline_calls` ÷
-    /// `dh_load_calls` ratio).
-    pub dbx_x87_load_inline_hits: u64,
-    /// METRICS_ON hit counter for the emitted x87 STORE inline fast leg —
-    /// exactly [`Self::dbx_x87_load_inline_hits`]'s contract, for the
-    /// store-side legs (dh store-leg design Phase 2). The citable A/B
-    /// evidence is the always-on cross-arm `dh_store_calls` collapse
-    /// (panel T3), not this smoke instrument.
-    pub dbx_x87_store_inline_hits: u64,
-    /// METRICS_ON (debug_assertions or the dyncore's `codegen-metrics`
-    /// feature) count of compiled block ARRIVALS: the block-identity stanza bumps
-    /// it with `add qword [rbp + OFF], 1` on every entry — dispatch entries,
-    /// native link arrivals, and self-loop iterations alike (footprint design
-    /// panel amendment 1: dispatch-weighted counts are biased because native
-    /// links bypass dispatch). Production release builds emit no increment,
-    /// so this stays 0 there.
-    pub dbx_block_arrivals: u64,
-    /// METRICS_ON companion to [`Self::dbx_block_arrivals`]: on every block
-    /// arrival the identity stanza adds the arriving block's TOTAL emitted
-    /// host-code byte length (`add qword [rbp + OFF], imm32`, the immediate
-    /// patched at block finish). This accumulates
-    /// `sum(arrivals_b × emitted_bytes_b)` — the execution-weighted footprint
-    /// numerator whose ratio against `native_retired_insns` is the
-    /// arrival-weighted bytes-per-retired-instruction engagement number the
-    /// footprint design's trust panel requires (census bytes-at-install alone
-    /// cannot prove HOT code shrank). Production release builds emit no
-    /// increment, so this stays 0 there.
-    pub dbx_arrival_weighted_bytes: u64,
-    /// Always-on count of shared VGA planar store-stub CALLS (footprint F1):
-    /// the engine-lifetime stub bumps it at entry
-    /// (`add qword [rbp + OFF], 1`), counting every arrival — planar commits
-    /// and helper tail-jump fallbacks alike. One shared site, so the counter
-    /// costs ~0 emitted footprint (the payoff of sharing).
-    pub dbx_vga_stub_calls: u64,
-    /// Always-on subset of [`Self::dbx_vga_stub_calls`] that committed
-    /// through the stub's inline planar path — the corridor-hit-rate signal
-    /// the old per-site inline METRICS_ON counter carried.
-    pub dbx_vga_stub_planar_hits: u64,
-    /// Always-on subset of [`Self::dbx_vga_stub_calls`] that committed
-    /// through the stub's inline CHAIN-4 arm (checked-write leg design §3.3 +
-    /// panel amendments). This is the arm's engagement certificate: paired
-    /// with the `write_decl_vga_chain4_aligned` helper-census cell (which
-    /// keeps counting helper ENTRIES), a warm chain-4 store moves this
-    /// counter while the census cell stays put — the cross-arm collapse the
-    /// design's A/B protocol requires.
-    pub dbx_vga_stub_chain4_hits: u64,
-    /// L2 S1 watched-store inline arm (HLD 2026.10.02 "native compiled watched-store
-    /// inline arm (L2)" §3): base of the owning `DbxCore`'s physical-page
-    /// table of `write_map` pointers, or `0` when the arm is disarmed.
-    /// Published by `DbxCore::maintenance` every dispatch (beside
-    /// [`Self::jit_tlb_ptr`]) and zeroed mid-dispatch whenever a page walk
-    /// records a paging-structure frame. The shared store stub's arm reads it
-    /// rbp-relative per execution; `0` sends every store to the helper.
-    pub dbx_write_map_table: usize,
-    /// Always-on count of stores the shared store stub's watched-store arm
-    /// committed inline (`add qword [rbp + OFF], 1` on its hit tail): data
-    /// stores to a page with live compiled blocks that never reached the
-    /// checked-write helper. The helper-side sibling is
-    /// `DbxCoreCounters::stores_absorbed`, which keeps its meaning
-    /// "absorbed by the helper".
-    pub dbx_watched_inline_stores: u64,
-    /// γ2.1 control-flow LINKING: per-dispatch remaining cycle budget the
-    /// dyncore publishes for native block CHAINING.
-    ///
-    /// A linked unconditional `JMP` block chains straight into its target with
-    /// `jmp rax` (no return to `DynCore::run`), so the per-block budget check
-    /// that the host-side driver would otherwise apply must live in the emitted
-    /// link tail. The link tail reads THIS field (`cmp ecx, [rdi + OFF]`) and
-    /// bounces to the dispatcher (`NeedBlock`) once the chain's accumulated
-    /// retirement reaches it — bounding an otherwise-unbounded native `jmp`
-    /// loop. Set in `DynCore::run` every dispatch (saturated to `u32`); the
-    /// interpreter never reads or writes it.
-    pub dyncore_budget: u32,
-    /// γ2.1 control-flow LINKING: the count of guest instructions retired by
-    /// blocks that have CHAINED natively during the current dispatch (the link
-    /// tail's `jmp rax` path), NOT including the block that finally returns.
-    ///
-    /// The block ABI returns the FINAL block's own retired count in EAX, so a
-    /// chained dispatch's true retirement is `dyncore_chain_retired + EAX`. Each
-    /// linking block, on its resolved chain path, adds its own count here before
-    /// `jmp rax`; `DynCore::run` zeroes it before entry and reads it after.
-    /// `0` for an un-chained single-block dispatch (so accounting is unchanged
-    /// there). The interpreter never touches it.
-    pub dyncore_chain_retired: u32,
-    /// γ2.1 control-flow LINKING: the `eip_start` of the linking `JMP` block
-    /// that bounced UNRESOLVED this dispatch, or [`DYNCORE_LINK_FROM_NONE`] when
-    /// no link bounce occurred.
-    ///
-    /// When a linking block's `jmp [slot0]` finds slot0 still a trampoline (the
-    /// target is not yet linked), its tail records its own `eip_start` here and
-    /// returns. `DynCore::run` reads it to recover the SOURCE block's identity
-    /// (the un-designed "from-key seam"), find/compile the target, and fill the
-    /// slot — without it the dispatcher cannot know WHICH block asked, since
-    /// with native chaining the block that returns is generally not the block
-    /// `run` entered. Pre-set to the sentinel each dispatch; the interpreter
-    /// never touches it.
-    pub dyncore_link_from_eip: u32,
-    /// γ2.2 conditional-`Jcc` LINKING: which of the bounced block's two outbound
-    /// link slots the unresolved edge belongs to — `0` for the TAKEN edge
-    /// (slot0), `1` for the NOT-TAKEN edge (slot1).
-    ///
-    /// An unconditional `JMP` has a single edge and always writes `0`. A `Jcc`
-    /// has TWO independent edges; whichever one bounced unresolved records its
-    /// slot index here ALONGSIDE [`Self::dyncore_link_from_eip`], so the
-    /// dispatcher fills the RIGHT slot in `resolve_link` (which otherwise could
-    /// not tell a taken bounce from a not-taken one). Only read when
-    /// `dyncore_link_from_eip != DYNCORE_LINK_FROM_NONE`; a `u32` (not `u8`) so
-    /// the bounce tail can write it with the existing `mov dword [rdi+OFF], imm`
-    /// emitter — no byte-store primitive needed. The interpreter never touches it.
-    pub dyncore_link_from_slot: u32,
-    /// γ2.4 near-`RET` LINKING: set to `1` by a linking `RET` block's tail when its
-    /// pop dispatched (the popped return EIP is already materialised in
-    /// [`Registers::eip`]), or `0` when no `RET` bounce occurred this dispatch.
-    ///
-    /// A `RET`'s target is the POPPED value (runtime data), so — unlike a `JMP`/
-    /// `Jcc`/`CALL`, whose targets are static and link through a fixed outbound
-    /// SLOT — a `RET` has NO source slot to fill. It instead resolves its native
-    /// target through the identity-keyed RET cache. Its tail therefore reports the
-    /// bounce on a DISTINCT carrier (this flag) rather than
-    /// [`Self::dyncore_link_from_eip`], so the dispatcher routes to the RET-cache
-    /// fill/lookup (`resolve_ret`) instead of the outbound-slot fill
-    /// (`resolve_link`). The popped EIP needs no separate carrier: the block
-    /// materialised it into [`Registers::eip`], so `final_eip` IS the return
-    /// target. Pre-set to `0` each dispatch; the interpreter never touches it.
-    pub dyncore_ret_miss: u32,
-    /// γ2.5 inline RET-cache HIT: the STABLE heap address of the FROM (RET) block's
-    /// inline ret-cache cell, written by a linking `RET` block's tail ALONGSIDE
-    /// [`Self::dyncore_ret_miss`] on a MISS bounce, or `0` when no RET bounce
-    /// occurred this dispatch.
-    ///
-    /// On an inline MISS (cold cell or a popped-EIP mismatch) the RET tail bounces
-    /// to the dispatcher exactly as γ2.4 did, but it ALSO reports its own inline
-    /// cell's baked address here so `resolve_ret` can FILL that cell (write the
-    /// popped EIP + the resolved target entry) and record it in the inline-site
-    /// reverse index. Unlike a JMP/Jcc/CALL — whose static slot lives in the cached
-    /// `CachedBlock` and is recoverable from `dyncore_link_from_eip` via a re-walk —
-    /// a RET's inline cell address is baked into emitted code, so carrying it
-    /// directly avoids a second page-walk for the FROM identity. A `usize` (the raw
-    /// cell pointer); only read when `dyncore_ret_miss != 0`. Pre-set to `0` each
-    /// dispatch; the interpreter never touches it.
-    pub dyncore_ret_from_cell: usize,
-    /// γ2.5 inline RET-cache HIT observability: a count of native inline RET HITs
-    /// (the `jmp cached_entry` fast transfer) taken during the current dispatch.
-    ///
-    /// An inline HIT is a pure native `jmp` that NEVER re-enters `DynCore::run`, so
-    /// neither `blocks_compiled` nor `cache_hits` (both bumped only inside `run`)
-    /// move on a hit — the HIT would be UNOBSERVABLE without a dedicated counter.
-    /// The emitted HIT path bumps THIS field (`add qword [rdi+OFF], 1`) before the
-    /// `jmp`; `DynCore::run` drains it into `DynCore::ret_inline_hits` after the
-    /// chain returns and zeroes it each dispatch. The interpreter never touches it.
-    pub dyncore_ret_inline_hits: u64,
-    /// The faulting guest LINEAR address of the most recent native memory-op
-    /// slow-exit this dispatch, written by the slow stub
-    /// (`mov [rdi+OFF_DYNCORE_SLOW_LINEAR], eax` in `emit_mem_slow_exit`), or `0`
-    /// if no native memory op slow-pathed. `DynCore::run` zeroes it each dispatch
-    /// and reads it afterward: under CR0.PG=0 it warms the software TLB for that
-    /// page so the next dispatch's inline probe hits instead of tag-missing.
-    /// Address `0` is page `0`, which is harmless to warm, so `0`-as-"none" loses
-    /// nothing. The interpreter never touches it.
-    pub dyncore_slow_linear: u32,
-    /// Pointer to the flat guest-RAM backing (`Memory::ram.as_mut_ptr()`) for
-    /// the dyncore's VIRTUALIZED-immediate runtime loads (EXP-031, HLD §3.4).
-    ///
-    /// Set in `DynCore::run` every dispatch, MIRRORING [`Self::jit_tlb_ptr`]
-    /// exactly — the same lifetime discipline, so a Memory replacement/restore
-    /// can never dangle it across dispatches. A virtualized imm32 site loads it
-    /// via `mov rcx, [rdi + OFF_JIT_RAM_PTR]` (RDI = the pinned `Cpu*`) and then
-    /// reads the CURRENT guest imm bytes at `[rcx + imm_phys]` (a disp32 into
-    /// post-A20 physical RAM; `MAX_RAM_SIZE` = 768 MB fits signed disp32
-    /// addressing with room to spare).
-    /// The interpreter never reads or writes it. It is `0` until the first
-    /// dispatch republishes it, and only ever READ by native code, which is
-    /// entered exclusively through `DynCore::run` (which republishes it first)
-    /// — so a value retained between dispatches is never consumed stale. It is
-    /// NOT cleared on dispatch exit (a hot-path store with no soundness value).
-    pub jit_ram_ptr: usize,
-    /// Base of the flat TLB projection view pair selected for the CURRENT CPL.
-    ///
-    /// `Memory::flat_views_ptr()` for CPL 0..2, plus `FLAT_VIEW_CPL3_DELTA` for
-    /// CPL 3. Republished every dispatch in `DynCore::run`, MIRRORING
-    /// [`Self::jit_tlb_ptr`] exactly — so a `Memory` replacement/restore can
-    /// never dangle it. `runner::enter` loads it once per native chain into the
-    /// pinned callee-saved R15, and every emitted probe reads a read entry at
-    /// `[r15 + page*8]` and a write entry at `[r15 + page*8 + FLAT_VIEW_WRITE_DELTA]`.
-    ///
-    /// Selecting the CPL at publication rather than probing it at runtime is
-    /// exact because CPL is constant across a native chain: every CPL-changing
-    /// shape (far transfers, IRET/INT/ICEBP, MOV Sreg, POPF/STI/CLI/HLT) is
-    /// unadmitted, and a retired excluded-class result fails loudly via
-    /// `CALLOUT_PARK_TRIPWIRE` rather than falling through.
-    ///
-    /// Null-view hygiene: every path that replaces or drops `Memory` nulls this,
-    /// so a skipped republication dereferences null (immediate and attributable)
-    /// instead of a stale heap block (silent).
-    pub jit_tlb_view: usize,
-    /// SMC-gate mirror read by the dyncore's native stores (F2b-4a).
-    ///
-    /// This is the `Cpu`-frame copy of `Memory::smc_has_code_pages` — a
-    /// set-once latch the dyncore raises (in both places) the first time it
-    /// caches a compiled block. A native `MOV [m], r` store emits an inline
-    /// gate test on THIS byte: while it is clear, the dyncore holds NO cached
-    /// block, so an inline store cannot stale one and runs natively; once it is
-    /// set, a code page may be watched, so native stores FALL BACK to the
-    /// interpreter (which owns the store + SMC invalidation). Mirroring the flag
-    /// here lets the gate be a single `cmp byte [rdi + off], 0` with the live
-    /// `Cpu` pointer already in `RDI`, with no extra indirection. The
-    /// interpreter never reads or writes it (no behavior change there).
-    pub smc_has_code_pages: bool,
-    /// Hardware task-switch generation counter (D41 edge-reset signal —
-    /// 2026.07.10 HLD "task-switch edge-reset precision").
-    ///
-    /// Bumped by the root's `Cpu::task_switch` at Step 5 — exactly where CR3
-    /// is committed from the new TSS and the TLB is unconditionally flushed
-    /// (Intel SDM Vol. 3A §7.3), BEFORE later fallible TSS reads, so even a
-    /// mid-switch failure that changed the translation premise is signalled.
-    /// The self-switch short-circuit (same TR) returns before Step 5 and
-    /// deliberately does NOT bump: it changes no context.
-    ///
-    /// Compared with Memory's translation epoch at the dynrec dispatch entry
-    /// (`sync_translation_epoch`). The translation epoch drives the reset;
-    /// this narrower epoch identifies which resets came from task switches.
-    /// Filled link slots in both engines, plus inline RET cells in the legacy
-    /// engine only, are reset while block BODIES are retained (their validity
-    /// is pinned per dispatch by the live code-fetch identity walk and the
-    /// physical SMC snoop). The interpreter does not access this field.
-    pub task_switch_epoch: u64,
     /// Raw calls to the root hardware-task-switch implementation, including
     /// self-switch short-circuits and failures before CR3 is committed.
     pub task_switch_calls: u64,
@@ -1342,33 +761,26 @@ pub struct Cpu {
     /// Task switches that reached Step 5 and committed a different CR3 value.
     pub task_switch_changed_cr3: u64,
     /// Cache-line-isolated wake-pending flag for the Phase 0b coroutine
-    /// scheduler. The JIT chain check and the interpreter outer-loop both
-    /// observe this byte to bail out early when a host thread (cpal,
-    /// nokhwa, RTP recv) has posted a wake into the scheduler's mailbox.
+    /// scheduler. The interpreter outer loop observes this byte to bail out
+    /// early when a host thread (cpal, nokhwa, RTP recv) has posted a wake into
+    /// the scheduler's mailbox.
     ///
     /// Producer side: `WakeMailbox::post` stores `1` here with `Release`
     /// ordering (after pushing the record). Consumer side: the scheduler
     /// clears it (stores `0`) inside `poll_wakes` after draining.
     ///
     /// The dedicated `[repr(align(64))]` wrapper keeps this field on its
-    /// own cache line — co-locating with `cycles` / `chain_counter` (both
-    /// written every JIT block) would create write-write contention on
-    /// the producer side every time a host thread fires a wake. (Devil's
+    /// own cache line — co-locating with the frequently updated `cycles`
+    /// would create write-write contention on the producer side every time
+    /// a host thread fires a wake. (Devil's
     /// advocate review item 2, 2026.04.25.)
     pub wakes_pending: WakesPendingFlag,
-    /// Non-architectural homes for the isolated native ABI.
-    pub dbx_scratch: DbxScratch,
-    /// native-SSE scratch (HLD 2026.09.27 U1): the 16-byte memory-operand
-    /// temp and the MXCSR bracket slots. See [`DbxSimdScratch`].
-    pub dbx_simd: DbxSimdScratch,
     /// Runtime-only decoded-x87 descriptor cache for the interpreter's
     /// 0xD8-0xDF arm. Entries are revalidated by exact encoded bytes on every
     /// probe, so it needs no snapshot/reset handling (same convention as
-    /// `instr_cache`). Placed at the struct tail: `Cpu` is `#[repr(C)]` and
-    /// JIT-pinned field offsets all precede this field.
+    /// `instr_cache`).
     pub x87_decode_cache: crate::x87_decode_cache::X87DecodeCache,
-    /// Decoded REP bytes retained across a scheduler-only yield. Placed after
-    /// every JIT-pinned field so generated-code offsets remain stable.
+    /// Decoded REP bytes retained across a scheduler-only yield.
     pub rep_fetch_latch: RepFetchLatch,
     /// Per-instance opt-in for tests which exercise hypothetical SSE3-capable
     /// guest CPUs. No currently modeled production CPU supports SSE3.
@@ -1382,22 +794,14 @@ pub struct Cpu {
     pub memory_type_msrs: crate::msr::MemoryTypeMsrs,
     /// Explicit machine clock, preserved by reset and emulation-speed changes.
     pub tsc_clock_hz: Option<u64>,
-    /// The DRC's once-per-run host FP environment check (ARCHITECTURE-GUIDE.md
-    /// "DRC a64 native SSE"). `DrcEngine::run_with_io` republishes it at every
-    /// dispatch from `fast_approx_fp_environment_supported` (host FPCR is the
-    /// default word); every native SSE floating-point op refuses to the checked
-    /// helper while it is clear. Engine-owned like `jit_tlb_view`: the
-    /// interpreter never reads or writes it, and it starts clear. At the tail
-    /// so every earlier JIT-pinned offset stays put.
-    pub host_fp_env_default: bool,
     /// Exact guest cycle clock: when set, the TSC ratio is the rational
     /// `tsc_clock_hz / tsc_cycle_hz` and emulation-speed changes leave it be.
     pub tsc_cycle_hz: Option<u64>,
 }
 /// Cache-line-aligned wake flag (Phase 0b). Wraps a single
 /// [`std::sync::atomic::AtomicU8`] in 64 bytes of padding so the producer's
-/// `Release` store cannot invalidate the line containing JIT-hot fields
-/// (`cycles`, `chain_counter`).
+/// `Release` store cannot invalidate the line containing frequently updated
+/// interpreter state such as `Cpu::cycles`.
 #[repr(C, align(64))]
 pub struct WakesPendingFlag {
     /// The flag itself. `0` = no wakes pending; `non-zero` = drain the
@@ -1584,14 +988,6 @@ impl Cpu {
                 regs.idtr.limit = 0x3ff;
                 regs
             },
-            chain_counter: 64_i32,
-            jit_bailout: 0,
-            jit_region_exit_reason: 0,
-            jit_region_exit_source_linear: 0,
-            jit_region_exit_target_linear: 0,
-            jit_region_internal_edges: 0,
-            jit_rep_cycles: 0,
-            flag_operand_slots: [0; 2],
             cycles: 0,
             sysenter_cs: 0,
             sysenter_esp: 0,
@@ -1626,7 +1022,6 @@ impl Cpu {
             fpu: Fpu::new(),
             sse: SseState::new(),
             sse_decode_cache: SseInstrCache::new(),
-            fpu_host_resident: Cell::new(false),
             mmx_retired: 0,
             mmx_profile: None,
             x87_retired: 0,
@@ -1653,42 +1048,10 @@ impl Cpu {
             diag_ring: ExecutionRingBuffer::new(),
             ret_guard_stack: FixedVec::new(),
             dos_extender_active: false,
-            jit_tlb_ptr: 0,
-            vga_commit_kind: 0,
-            vga_plane_mask: 0,
-            vga_planes_flat_ptr: 0,
-            vga_write_delay_cycles: 0,
-            vga_native_writes: 0,
-            dyncore_ctx_ptr: 0,
-            dbx_dispatch_ctx: 0,
-            dbx_x87_load_inline_hits: 0,
-            dbx_x87_store_inline_hits: 0,
-            dbx_block_arrivals: 0,
-            dbx_arrival_weighted_bytes: 0,
-            dbx_vga_stub_calls: 0,
-            dbx_vga_stub_planar_hits: 0,
-            dbx_vga_stub_chain4_hits: 0,
-            dbx_write_map_table: 0,
-            dbx_watched_inline_stores: 0,
-            dyncore_budget: 0,
-            dyncore_chain_retired: 0,
-            dyncore_link_from_eip: crate::cpu_offsets::DYNCORE_LINK_FROM_NONE,
-            dyncore_link_from_slot: 0,
-            dyncore_ret_miss: 0,
-            dyncore_ret_from_cell: 0,
-            dyncore_ret_inline_hits: 0,
-            dyncore_slow_linear: 0,
-            jit_ram_ptr: 0,
-            jit_tlb_view: 0,
-            smc_has_code_pages: false,
-            host_fp_env_default: false,
-            task_switch_epoch: 0,
             task_switch_calls: 0,
             task_switch_same_cr3: 0,
             task_switch_changed_cr3: 0,
             wakes_pending: WakesPendingFlag::new(),
-            dbx_scratch: DbxScratch::default(),
-            dbx_simd: DbxSimdScratch::default(),
             x87_decode_cache: crate::x87_decode_cache::X87DecodeCache::new(),
             rep_fetch_latch: RepFetchLatch::default(),
             #[cfg(any(test, feature = "test-util"))]
@@ -1717,10 +1080,6 @@ impl Cpu {
     }
     /// Reset CPU to initial state
     pub fn reset(&mut self) {
-        assert!(
-            !self.fpu_host_resident.get(),
-            "cannot reset CPU while guest x87 state is host-resident"
-        );
         self.fpu.reset();
         self.sse.reset();
         self.regs = Registers::new();
@@ -1759,7 +1118,6 @@ impl Cpu {
         self.diag_ring = ExecutionRingBuffer::new();
         self.diag_instr_counter = 0;
         self.ret_guard_stack.clear();
-        self.dbx_scratch = DbxScratch::default();
         self.flush_instr_cache();
         self.allow_null_cs = false;
         self.allow_pm_real_mode_ss = false;
@@ -1928,7 +1286,6 @@ impl Cpu {
         self.last_interrupt_had_error_code = false;
         self.dispatching_exception = None;
         self.rep_fetch_latch = RepFetchLatch::default();
-        self.dbx_scratch = DbxScratch::default();
     }
     /// Set the CPU type for instruction set filtering
     pub fn set_cpu_type(&mut self, cpu_type: CpuType) {
@@ -2309,17 +1666,6 @@ impl Cpu {
             return false;
         }
         self.regs.cs_cache.base == 0 && self.regs.ds_cache.base == 0 && self.regs.ss_cache.base == 0
-    }
-    /// Strict flat-model check for JIT 32-bit code generation.
-    ///
-    /// Returns true when CS/DS/SS bases are 0 (flat addressing) and CS/SS have
-    /// D/B=1 (32-bit default operand/address size and stack pointer).
-    ///
-    /// ES is NOT required to be flat: all ES usage (explicit overrides and string
-    /// operations) bails to interpreter in 32-bit mode.
-    /// Limits are NOT checked: see `is_flat_model()` rationale.
-    pub fn is_flat_model_for_jit(&self) -> bool {
-        self.is_flat_model() && self.regs.cs_cache.big && self.regs.ss_cache.big
     }
     /// Get the segment cache for a segment selector
     ///
@@ -2962,8 +2308,8 @@ impl Cpu {
     ///
     /// The probe is captured INSIDE the page walk, from the raw PTE (or PSE
     /// PDE) value read before the A/D write-back — never inferred after the
-    /// walk has already set D (dyncore checked-write census, panel amendment
-    /// A9). It reports `false` for: unpaged translations (no D bit exists),
+    /// walk has already set D. It reports `false` for: unpaged translations
+    /// (no D bit exists),
     /// non-write accesses, and hashed-TLB hits on an already-dirty page (no
     /// walk runs, so no D transition remains to observe).
     pub fn translate_linear_checked_with_dirty_probe<M: crate::PagedMemory>(
@@ -3031,8 +2377,7 @@ impl Cpu {
     /// The one page-walk body. The `bool` in the success value is the
     /// first-write probe: `true` iff this was a WRITE translation whose leaf
     /// dirty bit (PTE, or PSE PDE) was clear in the raw entry read by THIS
-    /// walk, captured before the accessed/dirty write-back (dyncore
-    /// checked-write census, panel amendment A9). Hashed-TLB hits return
+    /// walk, captured before the accessed/dirty write-back. Hashed-TLB hits return
     /// `false` for dirty entries. A clean global hit updates its retained
     /// backing entry; other clean hits fall through to the page walk.
     fn translate_paging_checked_probing<M: crate::PagedMemory>(
@@ -4697,10 +4042,6 @@ impl Cpu {
     /// (debugging aid), `diag_ring` and `dpmi_exception_diag` (diagnostics),
     /// loop-detection counters and cache hit/miss statistics.
     pub fn snapshot_state(&self) -> CpuSnapshot {
-        assert!(
-            !self.fpu_host_resident.get(),
-            "cannot snapshot CPU while guest x87 state is host-resident"
-        );
         CpuSnapshot {
             regs: self.regs.clone(),
             fpu: self.fpu.clone(),
@@ -4736,14 +4077,6 @@ impl Cpu {
             last_interrupt_had_error_code: self.last_interrupt_had_error_code,
             dispatching_exception: self.dispatching_exception,
             dos_extender_active: self.dos_extender_active,
-            chain_counter: self.chain_counter,
-            jit_bailout: self.jit_bailout,
-            jit_region_exit_reason: self.jit_region_exit_reason,
-            jit_region_exit_source_linear: self.jit_region_exit_source_linear,
-            jit_region_exit_target_linear: self.jit_region_exit_target_linear,
-            jit_region_internal_edges: self.jit_region_internal_edges,
-            jit_rep_cycles: self.jit_rep_cycles,
-            flag_operand_slots: self.flag_operand_slots,
             rep_fetch_latch: self.rep_fetch_latch,
         }
     }
@@ -4757,10 +4090,6 @@ impl Cpu {
     /// serialized register file violates CPL or virtual-8086 invariants.
     pub fn restore_state(&mut self, snap: &CpuSnapshot) -> Result<(), CpuSnapshotValidationError> {
         snap.validate()?;
-        assert!(
-            !self.fpu_host_resident.get(),
-            "cannot restore CPU while guest x87 state is host-resident"
-        );
         self.regs = snap.regs.clone();
         self.fpu = snap.fpu.clone();
         self.fpu.finish_external_restore();
@@ -4798,16 +4127,7 @@ impl Cpu {
         self.last_interrupt_had_error_code = snap.last_interrupt_had_error_code;
         self.dispatching_exception = snap.dispatching_exception;
         self.dos_extender_active = snap.dos_extender_active;
-        self.chain_counter = snap.chain_counter;
-        self.jit_bailout = snap.jit_bailout;
-        self.jit_region_exit_reason = snap.jit_region_exit_reason;
-        self.jit_region_exit_source_linear = snap.jit_region_exit_source_linear;
-        self.jit_region_exit_target_linear = snap.jit_region_exit_target_linear;
-        self.jit_region_internal_edges = snap.jit_region_internal_edges;
-        self.jit_rep_cycles = snap.jit_rep_cycles;
-        self.flag_operand_slots = snap.flag_operand_slots;
         self.rep_fetch_latch = snap.rep_fetch_latch;
-        self.dbx_scratch = DbxScratch::default();
         Ok(())
     }
 }
@@ -4817,25 +4137,6 @@ mod tests {
     use super::*;
     use crate::x87_ops::F80;
     use crate::{CpuError, DataSegReg, MemoryAccess, PageAccess, PagedMemory};
-    /// Unit 2b-ext: a host-service completion consumes the top entry only when it
-    /// predicts that return; a mismatch or a cleared slot leaves the stack.
-    #[test]
-    fn ras_pop_matching_consumes_only_a_matching_live_entry() {
-        let mut scratch = DbxScratch::default();
-        scratch.ras[DBX_RAS_SLOTS - 1] = 0x1000;
-        scratch.ras_eip[DBX_RAS_SLOTS - 1] = 0x0040_2000;
-        assert!(!scratch.ras_pop_matching(0x0040_2004), "another return");
-        assert_eq!(scratch.ras_top, 0);
-        assert!(scratch.ras_pop_matching(0x0040_2000));
-        assert_eq!(scratch.ras_top, DBX_RAS_SLOTS as u32 - 1);
-        let mut cleared = DbxScratch::default();
-        cleared.ras_eip[DBX_RAS_SLOTS - 1] = 0x0040_2000;
-        assert!(
-            !cleared.ras_pop_matching(0x0040_2000),
-            "a zero slot is never consumed, whatever its stale EIP"
-        );
-        assert_eq!(cleared.ras_top, 0);
-    }
     /// `set_es_real_mode` must mirror a 386 real-mode segment load: update the
     /// selector and cache BASE only, preserving the cached limit/access rights.
     /// Replacing the whole cache truncated an unreal-mode flat ES limit and
@@ -5690,13 +4991,6 @@ mod tests {
         assert_eq!(cpu.fpu.operand_offset, reset.operand_offset);
         assert_eq!(cpu.fpu.operand_selector, reset.operand_selector);
         assert_eq!(cpu.fpu.x87_save_area, reset.x87_save_area);
-    }
-    #[test]
-    #[should_panic(expected = "cannot reset CPU while guest x87 state is host-resident")]
-    fn full_reset_rejects_host_resident_fpu_state() {
-        let mut cpu = Cpu::new();
-        cpu.fpu_host_resident.set(true);
-        cpu.reset();
     }
     #[test]
     fn test_is_protected_mode() {
@@ -10826,39 +10120,6 @@ mod tests {
         assert!(cpu.is_flat_model());
     }
     #[test]
-    fn test_is_flat_model_for_jit_256mb_limit() {
-        let cpu = flat_pm_cpu(0x0FFFF, true, true);
-        assert!(cpu.is_flat_model_for_jit());
-    }
-    #[test]
-    fn test_is_flat_model_for_jit_4gb_limit() {
-        let cpu = flat_pm_cpu(0xFFFFF, true, true);
-        assert!(cpu.is_flat_model_for_jit());
-    }
-    #[test]
-    fn test_is_flat_model_for_jit_cs_not_big() {
-        let mut cpu = flat_pm_cpu(0xFFFFF, true, true);
-        cpu.regs.cs_cache.big = false;
-        assert!(!cpu.is_flat_model_for_jit());
-    }
-    #[test]
-    fn test_is_flat_model_for_jit_ss_not_big() {
-        let mut cpu = flat_pm_cpu(0xFFFFF, true, true);
-        cpu.regs.ss_cache.big = false;
-        assert!(!cpu.is_flat_model_for_jit());
-    }
-    #[test]
-    fn test_is_flat_model_for_jit_cs_base_nonzero() {
-        let mut cpu = flat_pm_cpu(0xFFFFF, true, true);
-        cpu.regs.cs_cache.base = 0x400000;
-        assert!(!cpu.is_flat_model_for_jit());
-    }
-    #[test]
-    fn test_is_flat_model_for_jit_es_irrelevant() {
-        let cpu = flat_pm_cpu(0xFFFFF, true, true);
-        assert!(cpu.is_flat_model_for_jit());
-    }
-    #[test]
     fn test_cov_read_descriptor_ldt_selector() {
         let mut cpu = Cpu::new();
         cpu.regs.cr0 = 1;
@@ -15333,70 +14594,5 @@ mod tests {
         let mut snapshot = cpu.snapshot_state();
         snapshot.tsc_cycle_hz = Some(0);
         assert!(snapshot.validate().is_err());
-    }
-    #[test]
-    fn dh_cpu_install_is_scoped_and_thread_local() {
-        assert!(current_dh_cpu().is_null());
-        let cpu = Cpu::new();
-        assert!(!cpu.fpu_host_resident.get());
-        let cpu_ptr = &cpu as *const Cpu;
-        let guard = unsafe { install_current_dh_cpu(cpu_ptr) };
-        assert_eq!(current_dh_cpu(), cpu_ptr);
-        host_x87_enter();
-        std::thread::spawn(|| {
-            assert!(current_dh_cpu().is_null());
-            let thread_cpu = Cpu::new();
-            let thread_cpu_ptr = &thread_cpu as *const Cpu;
-            let thread_guard = unsafe { install_current_dh_cpu(thread_cpu_ptr) };
-            assert_eq!(current_dh_cpu(), thread_cpu_ptr);
-            drop(thread_guard);
-            assert!(current_dh_cpu().is_null());
-        })
-        .join()
-        .expect("DH TLS isolation thread should not panic");
-        assert_eq!(current_dh_cpu(), cpu_ptr);
-        drop(guard);
-        assert!(current_dh_cpu().is_null());
-    }
-    #[test]
-    fn dh_residency_blocks_snapshot_and_restore() {
-        let mut cpu = Cpu::new();
-        cpu.fpu_host_resident.set(true);
-        let snapshot_panic =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cpu.snapshot_state()));
-        assert!(snapshot_panic.is_err());
-        let snap = Cpu::new().snapshot_state();
-        let restore_panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            cpu.restore_state(&snap).unwrap();
-        }));
-        assert!(restore_panic.is_err());
-        cpu.fpu_host_resident.set(false);
-        cpu.restore_state(&snap).unwrap();
-    }
-    #[test]
-    fn dh_residency_is_runtime_only_snapshot_state() {
-        let cpu = Cpu::new();
-        let snapshot_json =
-            serde_json::to_value(cpu.snapshot_state()).expect("CpuSnapshot must serialize to JSON");
-        assert!(snapshot_json.get("fpu_host_resident").is_none());
-    }
-    #[test]
-    fn dbx_scratch_is_reset_instead_of_serialized() {
-        let mut cpu = Cpu::new();
-        cpu.dbx_scratch.cycles_remaining = -17;
-        cpu.dbx_scratch.running_block_id = 42;
-        cpu.dbx_scratch.restart_flags = 0x08d5;
-        let snapshot = cpu.snapshot_state();
-        let snapshot_json =
-            serde_json::to_value(&snapshot).expect("CpuSnapshot must serialize to JSON");
-        assert!(snapshot_json.get("dbx_scratch").is_none());
-        cpu.restore_state(&snapshot).unwrap();
-        assert_eq!(cpu.dbx_scratch, DbxScratch::default());
-        cpu.dbx_scratch.tmpd = 9;
-        cpu.reset();
-        assert_eq!(cpu.dbx_scratch, DbxScratch::default());
-        cpu.dbx_scratch.helper_status = 1;
-        cpu.set_reset_vector_state();
-        assert_eq!(cpu.dbx_scratch, DbxScratch::default());
     }
 }

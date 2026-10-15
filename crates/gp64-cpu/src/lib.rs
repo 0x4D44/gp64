@@ -46,9 +46,7 @@ mod test_sync;
 pub fn host_mxcsr() -> u32 {
     sse_host_kernels::read_mxcsr()
 }
-/// Cold publication-time gate for profile Fast arithmetic. The exact SSE
-/// helpers keep their own per-call gate; this one lets a JIT decline an
-/// approximate native region before it becomes executable.
+/// Whether the host floating-point environment supports approximate Fast arithmetic.
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 #[must_use]
 pub fn fast_approx_fp_environment_supported() -> bool {
@@ -77,10 +75,9 @@ mod x87_oracle;
 mod x87_soft_test;
 pub use cpu::{
     cpuid_family_model_stepping, cpuid_features, cpuid_leaf2, cpuid_max_basic_leaf,
-    cpuid_signature, current_dh_cpu, host_x87_enter, install_current_dh_cpu, ret_guard_enabled,
-    ret_guard_should_log, ret_guard_write_dump, Cpu, CpuSnapshot, CpuSnapshotValidationError,
-    DbxScratch, DbxSimdScratch, DhCpuInstallGuard, MmxOperandKind, MmxProfile, RepFetchLatch,
-    RetGuardEntry, RetGuardKind, WakesPendingFlag, DBX_RAS_SLOTS,
+    cpuid_signature, ret_guard_enabled, ret_guard_should_log, ret_guard_write_dump, Cpu,
+    CpuSnapshot, CpuSnapshotValidationError, MmxOperandKind, MmxProfile, RepFetchLatch,
+    RetGuardEntry, RetGuardKind, WakesPendingFlag,
 };
 pub use deliver::{
     DeliveryMemory, DeliveryObserver, NoObserver, PmFrameCtx, PmGateCtx, TaskSwitchSource,
@@ -94,9 +91,9 @@ pub use gp64_types::{IoPort, MemoryAccess, PageAccess, PagedMemory};
 #[cfg(feature = "iced-interop")]
 use iced_x86::Instruction;
 pub use registers::{
-    cpu_offsets, DescriptorTableRegister, Registers, SegmentCache, CR0_EM, CR0_MP, CR0_TS,
-    CR0_X87_CONTROL_MASK, CR4_DE, CR4_MCE, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, CR4_PCE, CR4_PGE,
-    CR4_PSE, CR4_PVI, CR4_TSD, CR4_VME,
+    DescriptorTableRegister, Registers, SegmentCache, CR0_EM, CR0_MP, CR0_TS, CR0_X87_CONTROL_MASK,
+    CR4_DE, CR4_MCE, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, CR4_PCE, CR4_PGE, CR4_PSE, CR4_PVI,
+    CR4_TSD, CR4_VME,
 };
 pub use sse::SseState;
 use std::fmt;

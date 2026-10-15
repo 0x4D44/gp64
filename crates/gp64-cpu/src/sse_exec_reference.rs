@@ -1123,12 +1123,7 @@ fn maskmov<M: PagedMemory>(cpu: &mut Cpu, instruction: &Instruction, memory: &mu
 
 fn fxsave<M: PagedMemory>(cpu: &mut Cpu, instruction: &Instruction, memory: &mut M) -> Result<()> {
     require_aligned(cpu, instruction, memory, 16)?;
-    debug_assert!(
-        !cpu.fpu_host_resident.get(),
-        "FXSAVE requires dynamic engines to spill host-resident x87 state"
-    );
-    // FXSAVE observes the complete x87 image, including reverse-stale F80
-    // mirrors left by a DRC binary64 write.
+    // FXSAVE observes the complete x87 image, including deferred F80 mirrors.
     cpu.fpu.materialize_drc_f80_register_file();
     let mut image = [0u8; 512];
     image[0..2].copy_from_slice(&cpu.fpu.control_word.to_le_bytes());
