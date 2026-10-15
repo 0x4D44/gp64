@@ -7,21 +7,37 @@ use anyhow::Result;
 use std::{num::NonZeroU32, sync::Arc};
 use winit::{dpi::PhysicalSize, window::Window};
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+mod gpu;
+
 /// Borrowed UI-owned pixels in 0x00RRGGBB format; no emulation lock crosses here.
 #[derive(Clone, Copy)]
 pub struct Frame<'a> {
     pub pixels: &'a [u32],
     pub width: usize,
     pub height: usize,
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    pub generation: u64,
 }
 
 /// Presentation backend owned by the frontend, with all drawing behind it.
 pub enum Presenter {
-    Software(Software),
+    Software(Box<Software>),
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    Gpu(Option<Box<gpu::Gpu>>),
 }
 impl Presenter {
     pub fn new(window: Arc<Window>) -> Result<Self> {
-        Ok(Self::Software(Software::new(window)?))
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        {
+            // Debug/manual fallback check; intentionally not a public CLI option.
+            let forced = std::env::var_os("GP64_PRESENTER").as_deref()
+                == Some(std::ffi::OsStr::new("software"));
+            if let Some(gpu) = try_gpu(forced, || gpu::Gpu::new(window.clone())) {
+                return Ok(Self::Gpu(Some(Box::new(gpu))));
+            }
+        }
+        Ok(Self::Software(Box::new(Software::new(window)?)))
     }
 
     pub fn present(
@@ -33,6 +49,36 @@ impl Presenter {
     ) -> Result<()> {
         match self {
             Self::Software(software) => software.present(frame, size, scaler, overlays),
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            Self::Gpu(gpu) => {
+                let active = gpu.as_mut().expect("GPU is present until fallback");
+                match active.present(frame, size, scaler, &overlays) {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        tracing::warn!(%error, "GPU presentation failed; switching to software");
+                        let window = active.window.clone();
+                        // Release the surface/device before softbuffer takes the window.
+                        drop(gpu.take());
+                        *self = Self::Software(Box::new(Software::new(window)?));
+                        self.present(frame, size, scaler, overlays)
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn try_gpu<T>(forced_software: bool, initialize: impl FnOnce() -> Result<T>) -> Option<T> {
+    if forced_software {
+        tracing::info!("Software presentation requested by GP64_PRESENTER");
+        return None;
+    }
+    match initialize() {
+        Ok(gpu) => Some(gpu),
+        Err(error) => {
+            tracing::info!(%error, "GPU initialization failed; using software presentation");
+            None
         }
     }
 }
@@ -79,7 +125,7 @@ impl Software {
             &mut buffer,
             size,
             scaler,
-            overlays,
+            &overlays,
         );
         buffer
             .present()
@@ -93,7 +139,7 @@ impl Software {
         buffer: &mut [u32],
         size: PhysicalSize<u32>,
         scaler: Scaler,
-        overlays: overlay::Layers<'_>,
+        overlays: &overlay::Layers<'_>,
     ) {
         let (width, height) = (size.width as usize, size.height as usize);
         // Softbuffer may return an age-zero buffer with unspecified contents.
@@ -151,11 +197,15 @@ mod tests {
                                 pixels: &source,
                                 width: 320,
                                 height: 200,
+                                #[cfg(any(target_os = "windows", target_os = "macos"))]
+                                generation: 1,
                             },
                             Frame {
                                 pixels: &[],
                                 width: 0,
                                 height: 0,
+                                #[cfg(any(target_os = "windows", target_os = "macos"))]
+                                generation: 2,
                             },
                         ] {
                             Software::render(
@@ -164,7 +214,7 @@ mod tests {
                                 &mut actual,
                                 size,
                                 scaler,
-                                overlay::Layers {
+                                &overlay::Layers {
                                     menu: &menu,
                                     values: &values,
                                     pulse_ms: &|| pulse_ms,

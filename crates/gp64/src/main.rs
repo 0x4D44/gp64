@@ -527,6 +527,8 @@ impl App {
                 pixels: &self.frame.pixels,
                 width: self.frame.width,
                 height: self.frame.height,
+                #[cfg(any(target_os = "windows", target_os = "macos"))]
+                generation: self.frame.generation,
             },
             size,
             self.scaler,
