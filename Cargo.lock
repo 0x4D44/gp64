@@ -955,6 +955,7 @@ dependencies = [
  "iced-x86",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

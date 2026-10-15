@@ -527,6 +527,38 @@ struct Engine {
     /// A new listener has not yet taken a call (see [`ModemClock::EmulatedTime`]).
     first_accept: bool,
     discard_bytes: usize,
+    health: LineHealth,
+}
+/// How well the real-time PCM stream kept pace over the last few seconds.
+#[derive(Default)]
+struct LineHealth {
+    ticks: u32,
+    /// Ticks that found no complete peer frame and played silence.
+    starved: u32,
+    /// Ticks the DSP thread woke too late to run.
+    lost: u32,
+    /// Most peer frames waiting at the start of a tick.
+    peak: usize,
+}
+impl LineHealth {
+    /// Ticks between reports: five seconds.
+    const PERIOD: u32 = 500;
+    fn tick(&mut self, queued: usize, starved: bool) {
+        self.ticks += 1;
+        self.peak = self.peak.max(queued);
+        self.starved += u32::from(starved);
+        if self.ticks >= Self::PERIOD {
+            tracing::info!(
+                target: "gp64::modem::line",
+                "modem line: {} ms of peer audio queued (peak {} ms), {} ticks starved, {} ticks lost late",
+                queued * 10,
+                self.peak * 10,
+                self.starved,
+                self.lost,
+            );
+            *self = Self::default();
+        }
+    }
 }
 impl Engine {
     fn new(
@@ -556,6 +588,7 @@ impl Engine {
             first_tick: true,
             first_accept: false,
             discard_bytes: 0,
+            health: LineHealth::default(),
         }
     }
     fn configure_pcm_socket(socket: &TcpStream, clock: ModemClock) {
@@ -639,6 +672,7 @@ impl Engine {
             first_tick,
             first_accept,
             discard_bytes,
+            health,
         } = self;
         let result = connection.as_ref().and_then(|dial| match clock {
             ModemClock::RealTime => dial.poll(),
@@ -770,7 +804,12 @@ impl Engine {
                     Err(_) => disconnect = true,
                 }
             }
-            wire.take_chunk().unwrap_or(SILENCE)
+            let queued = wire.chunks_available();
+            let chunk = wire.take_chunk();
+            if stream.is_some() {
+                health.tick(queued, chunk.is_none());
+            }
+            chunk.unwrap_or(SILENCE)
         };
         let mut line_out = [0i16; CHUNK_SAMPLES];
         dsp.tick_dsp(&line_in, &mut line_out);
@@ -846,6 +885,13 @@ fn run(shutdown: Arc<AtomicBool>, mut engine: Box<Engine>) {
         if next_tick > now {
             thread::sleep(next_tick - now);
         } else {
+            // Only a call has a peer to fall behind.
+            let late = if engine.stream.is_some() {
+                (now - next_tick).as_millis() / 10
+            } else {
+                0
+            };
+            engine.health.lost += u32::try_from(late).unwrap_or(u32::MAX);
             next_tick = now;
         }
     }
