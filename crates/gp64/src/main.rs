@@ -13,6 +13,7 @@ mod output;
 mod overlay;
 mod pacing;
 mod placement;
+mod present;
 mod ring;
 mod scaler;
 mod script;
@@ -25,7 +26,6 @@ use emulation::{Emulation, Input, Notice, SOUND_HINT};
 use gp64_machine::modem::{LineStatus, ModemConnection, ModemLine};
 use std::{
     net::SocketAddr,
-    num::NonZeroU32,
     path::PathBuf,
     sync::{atomic::Ordering, Arc},
     time::{Duration, Instant},
@@ -126,7 +126,7 @@ fn run() -> Result<u8> {
         audio,
         window: None,
         placement: None,
-        surface: None,
+        presenter: None,
         emulation: None,
         keyboard: input::Keyboard::default(),
         modifiers: ModifiersState::empty(),
@@ -135,7 +135,6 @@ fn run() -> Result<u8> {
         buttons: [false; 3],
         motion: (0.0, 0.0),
         scaler: saved.scaler,
-        blitter: scaler::Blitter::default(),
         frame: emulation::Frame::default(),
         saved,
         program: String::new(),
@@ -249,7 +248,7 @@ struct App {
     window: Option<Arc<Window>>,
     /// Follows the window's place and size to restore them next run.
     placement: Option<placement::Tracker>,
-    surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
+    presenter: Option<present::Presenter>,
     emulation: Option<Emulation>,
     keyboard: input::Keyboard,
     modifiers: ModifiersState,
@@ -258,7 +257,6 @@ struct App {
     buttons: [bool; 3],
     motion: (f64, f64),
     scaler: scaler::Scaler,
-    blitter: scaler::Blitter,
     frame: emulation::Frame,
     /// The persisted choices; only menu and hotkey changes update them, so
     /// one-run command-line overrides never reach the file.
@@ -521,50 +519,23 @@ impl App {
             return Ok(());
         };
         let size = window.inner_size();
-        let (Some(width), Some(height)) =
-            (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
-        else {
+        let Some(presenter) = &mut self.presenter else {
             return Ok(());
         };
-        let Some(surface) = &mut self.surface else {
-            return Ok(());
-        };
-        surface
-            .resize(width, height)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        let mut buffer = surface
-            .buffer_mut()
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        // Softbuffer may return a buffer of age zero with unspecified contents.
-        // The blitter clears it once, including when no guest frame exists yet.
-        self.blitter.blit(
-            &self.frame.pixels,
-            self.frame.width,
-            self.frame.height,
-            &mut buffer,
-            size.width as usize,
-            size.height as usize,
+        presenter.present(
+            present::Frame {
+                pixels: &self.frame.pixels,
+                width: self.frame.width,
+                height: self.frame.height,
+            },
+            size,
             self.scaler,
-        );
-        // Drawn into the window buffer only, after scaling: never into the
-        // guest frame, so recordings never contain the menu.
-        self.menu.render(
-            &mut buffer,
-            size.width as usize,
-            size.height as usize,
-            &values,
-        );
-        overlay::render_recording(
-            &mut buffer,
-            size.width as usize,
-            size.height as usize,
-            values.recording,
-            self.opened.elapsed().as_millis() as u64,
-        );
-        buffer
-            .present()
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        Ok(())
+            overlay::Layers {
+                menu: &self.menu,
+                values: &values,
+                pulse_ms: &|| self.opened.elapsed().as_millis() as u64,
+            },
+        )
     }
     fn fail(&mut self, events: &ActiveEventLoop, error: impl std::fmt::Display) {
         self.result = Err(error.to_string());
@@ -591,12 +562,7 @@ impl ApplicationHandler<Notice> for App {
             let window = Arc::new(events.create_window(attributes)?);
             self.placement = Some(placement);
             set_icons(&window);
-            let context = softbuffer::Context::new(window.clone())
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-            self.surface = Some(
-                softbuffer::Surface::new(&context, window.clone())
-                    .map_err(|error| anyhow::anyhow!(error.to_string()))?,
-            );
+            self.presenter = Some(present::Presenter::new(window.clone())?);
             self.window = Some(window);
             self.redraw.invalidate();
             let (options, folder, program, script) =

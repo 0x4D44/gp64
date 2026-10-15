@@ -113,6 +113,31 @@ impl Values {
     }
 }
 
+/// Host overlay inputs shared by presenters, independent of their output format.
+/// A presenter can composite into its window buffer or use these same inputs to
+/// build separate RGBA layers with coverage without changing the frontend.
+pub struct Layers<'a> {
+    pub menu: &'a Menu,
+    pub values: &'a Values,
+    /// Host milliseconds driving the REC pulse, sampled after drawing the menu.
+    pub pulse_ms: &'a dyn Fn() -> u64,
+}
+impl Layers<'_> {
+    /// Composite at window resolution, after guest scaling: menu first, then REC.
+    /// Keep the menu's integer dimming and opaque black glyph outlines intact;
+    /// a future RGBA renderer must distinguish those outlines from no coverage.
+    pub fn render(&self, buffer: &mut [u32], width: usize, height: usize) {
+        self.menu.render(buffer, width, height, self.values);
+        render_recording(
+            buffer,
+            width,
+            height,
+            self.values.recording,
+            (self.pulse_ms)(),
+        );
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     Up,
