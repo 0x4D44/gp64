@@ -67,11 +67,61 @@ opt-level = 2
 [profile.dev.package.gp64-memory-core]
 opt-level = 2
 
+# Fat LTO reduces size; retain four codegen units and unwinding for panic recovery.
 [profile.release]
-lto = "thin"
+lto = "fat"
+panic = "unwind"
 codegen-units = 4
 opt-level = 3
 debug = "line-tables-only"
+
+# Log formatting is outside the emulation loop; retain all logging features.
+[profile.release.package.tracing-subscriber]
+opt-level = "z"
+
+# Log-filter matching favors size over throughput.
+[profile.release.package.regex-automata]
+opt-level = "z"
+
+# Log-filter parsing happens during initialization.
+[profile.release.package.regex-syntax]
+opt-level = "z"
+
+# Log-filter construction is initialization work.
+[profile.release.package.matchers]
+opt-level = "z"
+
+# JSON configuration and metadata are outside the emulation loop.
+[profile.release.package.serde_json]
+opt-level = "z"
+
+# Error construction and formatting are cold paths.
+[profile.release.package.anyhow]
+opt-level = "z"
+
+# Tracing span storage favors size over throughput.
+[profile.release.package.sharded-slab]
+opt-level = "z"
+
+# Tracing thread-local storage favors size over throughput.
+[profile.release.package.thread_local]
+opt-level = "z"
+
+# Diagnostic color formatting is a cold path.
+[profile.release.package.nu-ansi-term]
+opt-level = "z"
+
+# Keep the wgpu log bridge, optimizing its adapter for size.
+[profile.release.package.tracing-log]
+opt-level = "z"
+
+# JSON number formatting is outside the emulation loop.
+[profile.release.package.zmij]
+opt-level = "s"
+
+# Shader translation runs at renderer startup; favor size over compilation speed.
+[profile.release.package.naga]
+opt-level = "s"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(coverage_nightly)'] }
