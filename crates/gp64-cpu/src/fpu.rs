@@ -4933,6 +4933,22 @@ fn execute_inner<M: PagedMemory>(
             // SDM: FABS sets C1 to 0 (MDD-BUG-FLU-01967).
             cpu.fpu.status_word &= !(1 << 9);
         }
+        Mnemonic::Fsin | Mnemonic::Fcos | Mnemonic::Fsincos | Mnemonic::Fptan
+            if cpu.fpu.control_word & 1 == 0
+                && !stack_reg_empty(cpu, 0)
+                && cpu.fpu.get_st_ref(0).is_infinite() =>
+        {
+            // Host kernels mask all exceptions for safety. Suppress their
+            // masked-invalid results and any push (including stack overflow)
+            // when the guest leaves IE unmasked.
+            if matches!(instr.operation, Mnemonic::Fsincos | Mnemonic::Fptan)
+                && !cpu.fpu.is_empty((cpu.fpu.get_top().wrapping_sub(1)) & 0x7)
+            {
+                cpu.fpu.set_stack_fault(true);
+            } else {
+                set_invalid_op_non_stack(cpu);
+            }
+        }
         Mnemonic::Fsin => {
             if stack_reg_empty(cpu, 0) {
                 cpu.fpu.set_stack_fault(false);
@@ -12899,6 +12915,89 @@ mod tests_execute {
     #[test]
     fn execute_trig_infinity_invalid_cos() {
         assert_execute_trig_infinity_invalid(0xff, Code::Fcos);
+    }
+
+    fn assert_execute_trig_infinity_invalid_push(opcode: u8, code: Code) {
+        for sign in [0u16, 0x8000] {
+            for masked in [true, false] {
+                for depth in [2, 8] {
+                    let mut bytes = [0; 10];
+                    bytes[7] = 0x80;
+                    bytes[8..].copy_from_slice(&(0x7fff | sign).to_le_bytes());
+                    let mut cpu = Cpu::new();
+                    cpu.set_cpu_type(crate::CpuType::I80386);
+                    cpu.cs_bits = 16;
+                    let mut mem = Memory::new();
+                    cpu.fpu.control_word = if masked { 0x037f } else { 0x037e };
+                    cpu.fpu.status_word |= 1 << 10;
+                    for value in 1..=depth {
+                        cpu.fpu.push(F80::from_f64(f64::from(value)));
+                    }
+                    cpu.fpu.set_st(0, F80(bytes));
+                    if !masked {
+                        cpu.fpu.status_word |= 1 << 9; // invalid clears stale C1 unless overflowing
+                    }
+                    let top = cpu.fpu.get_top();
+                    let pushed_top = (top + 7) & 7;
+                    let tags = cpu.fpu.tag_word;
+                    let registers = cpu.fpu.regs;
+                    let instruction_bytes = [0xd9, opcode];
+                    let mut decoder = iced_x86::Decoder::with_ip(
+                        16,
+                        &instruction_bytes,
+                        0,
+                        iced_x86::DecoderOptions::NONE,
+                    );
+                    let instr = decoder.decode();
+                    assert_eq!(instr.code(), code);
+                    execute_portable(&mut cpu, &mut mem, &instr).unwrap();
+                    let context =
+                        format!("{code:?}: sign={sign:#x}, masked={masked}, depth={depth}");
+                    assert_eq!(cpu.fpu.status_word & 1, 1, "{context}: infinity raises IE");
+                    assert_eq!(cpu.fpu.status_word & 0x80 != 0, !masked, "{context}: ES");
+                    assert_eq!(
+                        cpu.fpu.status_word & 0x0240,
+                        if depth == 8 { 0x0240 } else { 0 },
+                        "{context}: SF and C1 identify stack overflow"
+                    );
+                    assert_eq!(
+                        cpu.fpu.get_top(),
+                        if masked { pushed_top } else { top },
+                        "{context}: TOP"
+                    );
+                    let mut expected_tags = tags;
+                    if masked {
+                        for index in [top, pushed_top] {
+                            expected_tags =
+                                (expected_tags & !(3 << (index * 2))) | (2 << (index * 2));
+                        }
+                        assert_eq!(cpu.fpu.status_word & (1 << 10), 0, "{context}: C2");
+                    }
+                    assert_eq!(cpu.fpu.tag_word, expected_tags, "{context}: stack tags");
+                    for (index, original) in registers.iter().enumerate() {
+                        let expected = if masked && (index == top || index == pushed_top) {
+                            F80::INDEFINITE.0
+                        } else {
+                            original.0
+                        };
+                        assert_eq!(
+                            cpu.fpu.regs[index].0, expected,
+                            "{context}: register={index}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn execute_trig_infinity_invalid_sincos() {
+        assert_execute_trig_infinity_invalid_push(0xfb, Code::Fsincos);
+    }
+
+    #[test]
+    fn execute_trig_infinity_invalid_ptan() {
+        assert_execute_trig_infinity_invalid_push(0xf2, Code::Fptan);
     }
 
     fn assert_execute_trig_extended_range(code: Code, huge_only: bool) {
