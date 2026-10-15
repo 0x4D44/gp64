@@ -1,5 +1,4 @@
-//! Minimal native GPU presentation. CPU composition remains the oracle for
-//! filtered modes and overlays until their dedicated GPU implementation.
+//! Native GPU scaling and coverage-aware host layers. CRT retains CPU composition.
 use super::{Frame, Software};
 use crate::{
     overlay,
@@ -13,7 +12,17 @@ use std::{
 };
 use winit::{dpi::PhysicalSize, window::Window};
 
-const SHADER: &str = include_str!("integer.wgsl");
+const COMMON: &str = include_str!("scaling.wgsl");
+const SHADERS: [&str; 3] = [
+    include_str!("integer.wgsl"),
+    include_str!("smooth.wgsl"),
+    include_str!("area.wgsl"),
+];
+const OVERLAY_SHADER: &str = include_str!("overlay.wgsl");
+
+fn scaling_shader(source: &str) -> String {
+    format!("{COMMON}\n{source}")
+}
 
 // Native wgpu futures wake the waiting thread themselves. No async runtime is
 // needed for the one-time adapter/device requests.
@@ -251,9 +260,7 @@ impl Gpu {
             format: Some(self.config.format.remove_srgb_suffix()),
             ..Default::default()
         });
-        let composed = scaler != Scaler::Integer
-            || overlays.menu.is_open()
-            || overlays.values.recording.is_some();
+        let composed = scaler == Scaler::Crt;
         let viewport = if composed {
             self.staging
                 .resize(size.width as usize * size.height as usize, 0);
@@ -280,6 +287,8 @@ impl Gpu {
                 height: size.height as usize,
             }
         } else {
+            self.renderer
+                .update_overlays(&self.device, &self.queue, size, overlays)?;
             self.renderer.upload(
                 &self.device,
                 &self.queue,
@@ -295,9 +304,14 @@ impl Gpu {
                 scaler,
             )
         };
-        self.queue.submit([self
-            .renderer
-            .draw(&self.device, &self.queue, &view, &viewport)]);
+        self.queue.submit([self.renderer.draw(
+            &self.device,
+            &self.queue,
+            &view,
+            &viewport,
+            scaler,
+            !composed,
+        )]);
         self.device.poll(wgpu::PollType::Poll)?;
         self.ensure_live()?;
         self.window.pre_present_notify();
@@ -312,9 +326,17 @@ impl Gpu {
 }
 
 struct Renderer {
-    pipeline: wgpu::RenderPipeline,
+    pipelines: [wgpu::RenderPipeline; 3],
+    overlay_pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
     geometry: wgpu::Buffer,
     image: Option<Image>,
+    menu_cache: overlay::MenuRasterCache,
+    recording_cache: overlay::RecRasterCache,
+    menu: Layer,
+    recording: Layer,
+    menu_open: bool,
+    recording_visible: bool,
 }
 struct Image {
     texture: wgpu::Texture,
@@ -324,41 +346,51 @@ struct Image {
 
 impl Renderer {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("gp64 integer"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        // Explicit layout lets every scaler and layer reuse its image binding.
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("gp64 pixels and geometry"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("gp64 integer"),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vertex"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fragment"),
-                compilation_options: Default::default(),
-                targets: &[Some(format.into())],
-            }),
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("gp64 presenter"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
         });
-        let geometry = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("gp64 geometry"),
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let pipelines = SHADERS
+            .map(|source| pipeline(device, format, &pipeline_layout, &scaling_shader(source)));
         Self {
-            pipeline,
-            geometry,
+            pipelines,
+            overlay_pipeline: pipeline(device, format, &pipeline_layout, OVERLAY_SHADER),
+            layout,
+            geometry: uniform(device, 32),
             image: None,
+            menu_cache: overlay::MenuRasterCache::default(),
+            recording_cache: overlay::RecRasterCache::default(),
+            menu: Layer::new(device),
+            recording: Layer::new(device),
+            menu_open: false,
+            recording_visible: false,
         }
     }
 
@@ -371,17 +403,141 @@ impl Renderer {
         height: u32,
         generation: Option<u64>,
     ) -> Result<()> {
+        Image::upload(
+            &mut self.image,
+            device,
+            queue,
+            &self.layout,
+            &self.geometry,
+            pixels,
+            width,
+            height,
+            generation,
+        )?;
+        Ok(())
+    }
+
+    fn update_overlays(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        size: PhysicalSize<u32>,
+        overlays: &overlay::Layers<'_>,
+    ) -> Result<()> {
+        let (width, height) = (size.width, size.height);
+        self.menu_open = overlays.menu.is_open();
+        if self.menu_open
+            && self
+                .menu_cache
+                .update(overlays.menu, width, height, overlays.values)
+        {
+            self.menu
+                .upload(device, queue, &self.layout, self.menu_cache.raster())?;
+        }
+        // Match Layers::render: sample the pulse after drawing the menu.
+        self.recording_visible = overlays.values.recording.is_some();
+        if self.recording_cache.update(
+            overlays.values.recording,
+            width,
+            height,
+            (overlays.pulse_ms)(),
+        ) {
+            if let Some(raster) = self.recording_cache.raster() {
+                self.recording.upload(device, queue, &self.layout, raster)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn draw(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        viewport: &Viewport,
+        scaler: Scaler,
+        gpu_overlays: bool,
+    ) -> wgpu::CommandBuffer {
+        let total = self.image.as_ref().map_or(1, |image| {
+            u64::from(image.texture.width()) * u64::from(image.texture.height())
+        });
+        let reciprocal = (1u64 << 40).div_ceil(total);
+        let geometry = [
+            viewport.x as u32,
+            viewport.y as u32,
+            viewport.width as u32,
+            viewport.height as u32,
+            reciprocal as u32,
+            (reciprocal >> 32) as u32,
+            u32::from(gpu_overlays && self.menu_open),
+            0,
+        ];
+        write_words(queue, &self.geometry, &geometry);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("gp64 present"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            if let Some(image) = &self.image {
+                if viewport.width > 0 && viewport.height > 0 {
+                    let index = match scaler {
+                        Scaler::Integer | Scaler::Crt => 0,
+                        Scaler::Smooth => 1,
+                        Scaler::Area => 2,
+                    };
+                    pass.set_pipeline(&self.pipelines[index]);
+                    pass.set_bind_group(0, &image.bind, &[]);
+                    set_region(&mut pass, viewport);
+                    pass.draw(0..3, 0..1);
+                }
+            }
+            if gpu_overlays {
+                pass.set_pipeline(&self.overlay_pipeline);
+                if self.menu_open {
+                    self.menu.draw(&mut pass);
+                }
+                if self.recording_visible {
+                    self.recording.draw(&mut pass);
+                }
+            }
+        }
+        encoder.finish()
+    }
+}
+
+impl Image {
+    /// Returns whether bytes were sent to the GPU (also observed by tests).
+    fn upload(
+        slot: &mut Option<Self>,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+        geometry: &wgpu::Buffer,
+        pixels: &[u32],
+        width: u32,
+        height: u32,
+        generation: Option<u64>,
+    ) -> Result<bool> {
         if width == 0 || height == 0 || pixels.len() < width as usize * height as usize {
-            self.image = None;
-            return Ok(());
+            *slot = None;
+            return Ok(false);
         }
         if width > device.limits().max_texture_dimension_2d
             || height > device.limits().max_texture_dimension_2d
         {
             bail!("guest exceeds GPU texture limits");
         }
-        if self
-            .image
+        if slot
             .as_ref()
             .is_none_or(|image| image.texture.width() != width || image.texture.height() != height)
         {
@@ -401,7 +557,7 @@ impl Renderer {
             });
             let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("gp64 image"),
-                layout: &self.pipeline.get_bind_group_layout(0),
+                layout,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -411,17 +567,17 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: self.geometry.as_entire_binding(),
+                        resource: geometry.as_entire_binding(),
                     },
                 ],
             });
-            self.image = Some(Image {
+            *slot = Some(Image {
                 texture,
                 bind,
                 generation: None,
             });
         }
-        let image = self.image.as_mut().context("image was allocated")?;
+        let image = slot.as_mut().context("image was allocated")?;
         if generation.is_none() || image.generation != generation {
             // These native targets are little-endian: 0x00RRGGBB is BGRA in
             // memory. Safe conversion also makes that byte order explicit.
@@ -440,61 +596,142 @@ impl Renderer {
                 image.texture.size(),
             );
             image.generation = generation;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+struct Layer {
+    image: Option<Image>,
+    placement: wgpu::Buffer,
+    origin: [u32; 2],
+    #[cfg(test)]
+    uploads: usize,
+}
+impl Layer {
+    fn new(device: &wgpu::Device) -> Self {
+        Self {
+            image: None,
+            placement: uniform(device, 16),
+            origin: [0, 0],
+            #[cfg(test)]
+            uploads: 0,
+        }
+    }
+
+    fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+        raster: &overlay::Raster,
+    ) -> Result<()> {
+        let uploaded = Image::upload(
+            &mut self.image,
+            device,
+            queue,
+            layout,
+            &self.placement,
+            &raster.pixels,
+            raster.width,
+            raster.height,
+            None,
+        )?;
+        if uploaded {
+            self.origin = raster.origin;
+            write_words(
+                queue,
+                &self.placement,
+                &[self.origin[0], self.origin[1], 0, 0],
+            );
+            #[cfg(test)]
+            {
+                self.uploads += 1;
+            }
         }
         Ok(())
     }
 
-    fn draw(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        view: &wgpu::TextureView,
-        viewport: &Viewport,
-    ) -> wgpu::CommandBuffer {
-        let geometry: Vec<u8> = [viewport.x, viewport.y, viewport.width, viewport.height]
-            .iter()
-            .flat_map(|v| (*v as u32).to_le_bytes())
-            .collect();
-        queue.write_buffer(&self.geometry, 0, &geometry);
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("gp64 present"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            if let Some(image) = &self.image {
-                if viewport.width > 0 && viewport.height > 0 {
-                    pass.set_pipeline(&self.pipeline);
-                    pass.set_bind_group(0, &image.bind, &[]);
-                    pass.set_viewport(
-                        viewport.x as f32,
-                        viewport.y as f32,
-                        viewport.width as f32,
-                        viewport.height as f32,
-                        0.0,
-                        1.0,
-                    );
-                    pass.set_scissor_rect(
-                        viewport.x as u32,
-                        viewport.y as u32,
-                        viewport.width as u32,
-                        viewport.height as u32,
-                    );
-                    pass.draw(0..3, 0..1);
-                }
-            }
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+        if let Some(image) = &self.image {
+            pass.set_bind_group(0, &image.bind, &[]);
+            set_region(
+                pass,
+                &Viewport {
+                    x: self.origin[0] as usize,
+                    y: self.origin[1] as usize,
+                    width: image.texture.width() as usize,
+                    height: image.texture.height() as usize,
+                },
+            );
+            pass.draw(0..3, 0..1);
         }
-        encoder.finish()
     }
+}
+
+fn set_region(pass: &mut wgpu::RenderPass<'_>, viewport: &Viewport) {
+    pass.set_viewport(
+        viewport.x as f32,
+        viewport.y as f32,
+        viewport.width as f32,
+        viewport.height as f32,
+        0.0,
+        1.0,
+    );
+    pass.set_scissor_rect(
+        viewport.x as u32,
+        viewport.y as u32,
+        viewport.width as u32,
+        viewport.height as u32,
+    );
+}
+
+fn uniform(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("gp64 geometry"),
+        size,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn write_words(queue: &wgpu::Queue, buffer: &wgpu::Buffer, words: &[u32]) {
+    let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+    queue.write_buffer(buffer, 0, &bytes);
+}
+
+fn pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    layout: &wgpu::PipelineLayout,
+    source: &str,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("gp64 presenter"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("gp64 presenter"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vertex"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fragment"),
+            compilation_options: Default::default(),
+            targets: &[Some(format.into())],
+        }),
+        primitive: Default::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 #[cfg(test)]

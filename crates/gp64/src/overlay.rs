@@ -246,58 +246,86 @@ impl Menu {
             buffer,
             width,
             height,
+            origin_x: 0,
+            origin_y: 0,
             scale: layout.scale,
+            coverage: false,
         };
-        let line = GLYPH_H * layout.scale;
-        let mut y = layout.y;
-        let title = if values.pauses() {
-            "gp64  PAUSED"
-        } else {
-            "gp64  RUNNING (LINK IN USE)"
-        };
-        canvas.text(layout.x, y, title.as_bytes(), WHITE);
-        y += 2 * line;
-        for (index, &item) in ITEMS.iter().enumerate() {
-            let locked = item == Item::Mute && values.mute_locked;
-            let value = value_text(item, values);
-            draw_row(
-                &mut canvas,
-                layout.x,
-                y,
-                item,
-                &value,
-                index == self.selected,
-                locked,
-            );
-            y += layout.pitch * line;
-        }
-        // One blank row after the last item, then the hint.
-        let hint = y + 2 * line - layout.pitch * line;
-        canvas.text(layout.x, hint, HINT.as_bytes(), GREY);
+        draw_menu(&mut canvas, width, height, &MenuText::new(self, values));
     }
 }
 
-fn draw_row(
-    canvas: &mut Canvas<'_>,
-    x: usize,
-    y: usize,
-    item: Item,
-    value: &str,
-    selected: bool,
-    locked: bool,
-) {
+fn row_text(item: Item, value: &str, selected: bool) -> String {
     let mut row = vec![if selected { MARKER } else { b' ' }, b' '];
     row.extend_from_slice(item.label().as_bytes());
     if !value.is_empty() {
         row.resize(LABEL_COLS, b' ');
         row.extend_from_slice(value.as_bytes());
     }
-    let colour = match (selected, locked) {
-        (_, true) => GREY,
-        (true, false) => YELLOW,
-        (false, false) => WHITE,
-    };
-    canvas.text(x, y, &row, colour);
+    String::from_utf8(row).expect("menu labels and values are ASCII")
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct MenuText {
+    title: String,
+    rows: [String; ITEMS.len()],
+    row_colours: [u32; ITEMS.len()],
+    // Keep the semantic state explicit in the cache key as well as its text.
+    selected: usize,
+    paused: bool,
+    mute_locked: bool,
+}
+impl MenuText {
+    fn new(menu: &Menu, values: &Values) -> Self {
+        let selected = menu.selected;
+        let rows = std::array::from_fn(|index| {
+            let item = ITEMS[index];
+            row_text(item, &value_text(item, values), index == selected)
+        });
+        let row_colours = std::array::from_fn(|index| {
+            let locked = ITEMS[index] == Item::Mute && values.mute_locked;
+            match (index == selected, locked) {
+                (_, true) => GREY,
+                (true, false) => YELLOW,
+                (false, false) => WHITE,
+            }
+        });
+        let paused = values.pauses();
+        Self {
+            title: if paused {
+                "gp64  PAUSED"
+            } else {
+                "gp64  RUNNING (LINK IN USE)"
+            }
+            .into(),
+            rows,
+            row_colours,
+            selected,
+            paused,
+            mute_locked: values.mute_locked,
+        }
+    }
+}
+
+fn draw_menu(canvas: &mut Canvas<'_>, width: usize, height: usize, text: &MenuText) {
+    let layout = layout(width, height, ITEMS.len());
+    canvas.scale = layout.scale;
+    let line = GLYPH_H * layout.scale;
+    let mut y = layout.y;
+    canvas.text(layout.x, y, text.title.as_bytes(), WHITE);
+    y += 2 * line;
+    for index in 0..ITEMS.len() {
+        canvas.text(
+            layout.x,
+            y,
+            text.rows[index].as_bytes(),
+            text.row_colours[index],
+        );
+        y += layout.pitch * line;
+    }
+    // One blank row after the last item, then the hint.
+    let hint = y + 2 * line - layout.pitch * line;
+    canvas.text(layout.x, hint, HINT.as_bytes(), GREY);
 }
 
 fn ascii_uppercase(value: &str, limit: usize) -> String {
@@ -375,23 +403,54 @@ pub fn render_recording(
     if buffer.len() < width * height {
         return;
     }
-    let mut text = vec![BULLET];
-    text.extend_from_slice(format!(" REC {}", clock(ms)).as_bytes());
-    // One scale step per 360 window rows, up to the menu's largest.
-    let scale = (height / 360).clamp(1, SCALE_MAX);
-    let text_w = text.len() * GLYPH_W * scale;
-    // Raised cosine: bright at the start of each cycle, dim half-way.
-    let phase = (pulse_ms % PULSE_MS) as f64 / PULSE_MS as f64;
-    let t = (1.0 + (phase * std::f64::consts::TAU).cos()) / 2.0;
-    let red = REC_DIM + (t * f64::from(REC_BRIGHT - REC_DIM)).round() as u32;
+    let (text, red) = recording_appearance(ms, pulse_ms);
+    let layout = recording_layout(width, height, text.len());
     let mut canvas = Canvas {
         buffer: &mut buffer[..width * height],
         width,
         height,
-        scale,
+        origin_x: 0,
+        origin_y: 0,
+        scale: layout.scale,
+        coverage: false,
     };
-    let x = width.saturating_sub(text_w + MARGIN * scale);
-    canvas.text(x, MARGIN * scale, &text, red << 16);
+    draw_recording(&mut canvas, width, height, &text, red);
+}
+
+fn recording_appearance(ms: u64, pulse_ms: u64) -> (Vec<u8>, u32) {
+    let mut text = vec![BULLET];
+    text.extend_from_slice(format!(" REC {}", clock(ms)).as_bytes());
+    // One scale step per 360 window rows, up to the menu's largest.
+    // Raised cosine: bright at the start of each cycle, dim half-way.
+    let phase = (pulse_ms % PULSE_MS) as f64 / PULSE_MS as f64;
+    let t = (1.0 + (phase * std::f64::consts::TAU).cos()) / 2.0;
+    let red = REC_DIM + (t * f64::from(REC_BRIGHT - REC_DIM)).round() as u32;
+    (text, red)
+}
+
+#[derive(Clone, Copy)]
+struct RecordingLayout {
+    scale: usize,
+    x: usize,
+    y: usize,
+    text_width: usize,
+    text_height: usize,
+}
+fn recording_layout(width: usize, height: usize, text_len: usize) -> RecordingLayout {
+    let scale = (height / 360).clamp(1, SCALE_MAX);
+    let text_width = text_len * GLYPH_W * scale;
+    RecordingLayout {
+        scale,
+        x: width.saturating_sub(text_width + MARGIN * scale),
+        y: MARGIN * scale,
+        text_width,
+        text_height: GLYPH_H * scale,
+    }
+}
+fn draw_recording(canvas: &mut Canvas<'_>, width: usize, height: usize, text: &[u8], red: u32) {
+    let layout = recording_layout(width, height, text.len());
+    canvas.scale = layout.scale;
+    canvas.text(layout.x, layout.y, text, red << 16);
 }
 
 /// Scales each colour channel to [`DIM`]/256.
@@ -448,7 +507,10 @@ struct Canvas<'a> {
     buffer: &'a mut [u32],
     width: usize,
     height: usize,
+    origin_x: usize,
+    origin_y: usize,
     scale: usize,
+    coverage: bool,
 }
 impl Canvas<'_> {
     /// CP437 glyphs with a one-glyph-pixel black outline.
@@ -477,18 +539,238 @@ impl Canvas<'_> {
                 }
                 for sy in 0..scale {
                     let py = y + row as isize * scale + sy;
-                    if py < 0 || py as usize >= self.height {
+                    let local_y = py - self.origin_y as isize;
+                    if local_y < 0 || local_y as usize >= self.height {
                         continue;
                     }
                     for sx in 0..scale {
                         let px = x + column as isize * scale + sx;
-                        if px >= 0 && (px as usize) < self.width {
-                            self.buffer[py as usize * self.width + px as usize] = colour;
+                        let local_x = px - self.origin_x as isize;
+                        if local_x >= 0 && (local_x as usize) < self.width {
+                            let pixel = if self.coverage {
+                                0xff00_0000 | colour
+                            } else {
+                                colour
+                            };
+                            self.buffer[local_y as usize * self.width + local_x as usize] = pixel;
                         }
                     }
                 }
             }
         }
+    }
+}
+
+/// Cropped host overlay pixels for the GPU presenter. Pixels are packed as
+/// 0xAARRGGBB (BGRA in memory on these little-endian targets); the high byte
+/// is coverage (zero or 255), and covered black pixels remain opaque.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Raster {
+    pub(crate) origin: [u32; 2],
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) pixels: Vec<u32>,
+}
+
+/// Caches the menu glyph layer independently from the caller's visibility
+/// flag and the frame dimming pass.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[derive(Default)]
+pub(crate) struct MenuRasterCache {
+    key: Option<MenuRasterKey>,
+    raster: Raster,
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[derive(Clone, PartialEq, Eq)]
+struct MenuRasterKey {
+    width: u32,
+    height: u32,
+    text: MenuText,
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+impl MenuRasterCache {
+    /// Rebuilds the glyph texture only when its rendered content or window
+    /// dimensions change. The caller controls visibility separately.
+    pub(crate) fn update(&mut self, menu: &Menu, width: u32, height: u32, values: &Values) -> bool {
+        if !menu.open {
+            return false;
+        }
+        let text = MenuText::new(menu, values);
+        let key = MenuRasterKey {
+            width,
+            height,
+            text: text.clone(),
+        };
+        if self.key.as_ref() == Some(&key) {
+            return false;
+        }
+        self.raster = menu_raster(width, height, &text);
+        self.key = Some(key);
+        true
+    }
+
+    pub(crate) fn raster(&self) -> &Raster {
+        &self.raster
+    }
+}
+
+/// Caches the small top-right REC layer. Passing no recording leaves the
+/// previous texture available; the presenter owns visibility.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[derive(Default)]
+pub(crate) struct RecRasterCache {
+    key: Option<RecRasterKey>,
+    raster: Raster,
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[derive(Clone, PartialEq, Eq)]
+struct RecRasterKey {
+    width: u32,
+    height: u32,
+    clock: String,
+    red: u32,
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+impl RecRasterCache {
+    /// Rebuilds only when the displayed clock, pulse colour, or window size
+    /// changes. A stopped recording keeps its last raster for reuse.
+    pub(crate) fn update(
+        &mut self,
+        recording: Option<u64>,
+        width: u32,
+        height: u32,
+        pulse_ms: u64,
+    ) -> bool {
+        let Some(ms) = recording else {
+            return false;
+        };
+        let (text, red) = recording_appearance(ms, pulse_ms);
+        let clock = clock(ms);
+        let key = RecRasterKey {
+            width,
+            height,
+            clock,
+            red,
+        };
+        if self.key.as_ref() == Some(&key) {
+            return false;
+        }
+        self.raster = recording_raster(width, height, &text, red);
+        self.key = Some(key);
+        true
+    }
+
+    pub(crate) fn raster(&self) -> Option<&Raster> {
+        self.key.as_ref().map(|_| &self.raster)
+    }
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn menu_raster(width: u32, height: u32, text: &MenuText) -> Raster {
+    let width = width as usize;
+    let height = height as usize;
+    let layout = layout(width, height, ITEMS.len());
+    let block_width = BLOCK_COLS * GLYPH_W * layout.scale;
+    let block_height = block_rows(layout.pitch, ITEMS.len()) * GLYPH_H * layout.scale;
+    let bounds = cropped_bounds(
+        width,
+        height,
+        layout.x,
+        layout.y,
+        block_width,
+        block_height,
+        layout.scale,
+    );
+    let mut raster = raster_for_bounds(bounds);
+    if raster.width == 0 || raster.height == 0 {
+        return raster;
+    }
+    let mut canvas = Canvas {
+        buffer: &mut raster.pixels,
+        width: raster.width as usize,
+        height: raster.height as usize,
+        origin_x: raster.origin[0] as usize,
+        origin_y: raster.origin[1] as usize,
+        scale: layout.scale,
+        coverage: true,
+    };
+    draw_menu(&mut canvas, width, height, text);
+    raster
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn recording_raster(width: u32, height: u32, text: &[u8], red: u32) -> Raster {
+    let width = width as usize;
+    let height = height as usize;
+    let layout = recording_layout(width, height, text.len());
+    let bounds = cropped_bounds(
+        width,
+        height,
+        layout.x,
+        layout.y,
+        layout.text_width,
+        layout.text_height,
+        layout.scale,
+    );
+    let mut raster = raster_for_bounds(bounds);
+    if raster.width == 0 || raster.height == 0 {
+        return raster;
+    }
+    let mut canvas = Canvas {
+        buffer: &mut raster.pixels,
+        width: raster.width as usize,
+        height: raster.height as usize,
+        origin_x: raster.origin[0] as usize,
+        origin_y: raster.origin[1] as usize,
+        scale: layout.scale,
+        coverage: true,
+    };
+    draw_recording(&mut canvas, width, height, text, red);
+    raster
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn cropped_bounds(
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    content_width: usize,
+    content_height: usize,
+    scale: usize,
+) -> (usize, usize, usize, usize) {
+    let left = x.saturating_sub(scale);
+    let top = y.saturating_sub(scale);
+    let right = x
+        .saturating_add(content_width)
+        .saturating_add(scale)
+        .min(width);
+    let bottom = y
+        .saturating_add(content_height)
+        .saturating_add(scale)
+        .min(height);
+    (
+        left.min(width),
+        top.min(height),
+        right.max(left.min(width)),
+        bottom.max(top.min(height)),
+    )
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn raster_for_bounds((left, top, right, bottom): (usize, usize, usize, usize)) -> Raster {
+    let width = right.saturating_sub(left);
+    let height = bottom.saturating_sub(top);
+    Raster {
+        origin: [left as u32, top as u32],
+        width: width as u32,
+        height: height as u32,
+        pixels: vec![0; width * height],
     }
 }
 
@@ -839,7 +1121,10 @@ mod tests {
             buffer: &mut buffer,
             width,
             height,
+            origin_x: 0,
+            origin_y: 0,
             scale: 3,
+            coverage: false,
         };
         for (x, y) in [(-30, -30), (-5, 5), (15, 15), (19, -2), (100, 100)] {
             canvas.glyph(x, y, b'#', WHITE);
@@ -927,5 +1212,128 @@ mod tests {
         assert_eq!(draw(0), REC_BRIGHT << 16);
         assert_eq!(draw(500), REC_DIM << 16);
         assert_eq!(draw(1000), draw(0));
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    fn composite_raster(buffer: &mut [u32], window_width: usize, raster: &Raster) {
+        for y in 0..raster.height as usize {
+            for x in 0..raster.width as usize {
+                let source = raster.pixels[y * raster.width as usize + x];
+                if source >> 24 != 0 {
+                    let target_x = raster.origin[0] as usize + x;
+                    let target_y = raster.origin[1] as usize + y;
+                    buffer[target_y * window_width + target_x] = source & 0x00ff_ffff;
+                }
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[test]
+    fn cropped_rasters_match_menu_dimming_and_recording_composition() {
+        let menu = open();
+        let values = Values {
+            recording: Some(61_500),
+            ..values()
+        };
+        let windows = [
+            (1, 1),
+            (17, 19),
+            (319, 201),
+            (641, 401),
+            (1280, 721),
+            (3840, 2160),
+        ];
+        let mut menu_cache = MenuRasterCache::default();
+        let mut rec_cache = RecRasterCache::default();
+        for (width, height) in windows {
+            let base = vec![0x00ff_8040; width * height];
+            let mut expected = base.clone();
+            menu.render(&mut expected, width, height, &values);
+            render_recording(&mut expected, width, height, values.recording, 0);
+
+            let mut actual = base;
+            if menu.is_open() {
+                dim(&mut actual);
+            }
+            assert!(menu_cache.update(&menu, width as u32, height as u32, &values));
+            let menu_raster = menu_cache.raster();
+            assert!(menu_raster
+                .pixels
+                .iter()
+                .all(|pixel| matches!(pixel >> 24, 0 | 255)));
+            composite_raster(&mut actual, width, menu_raster);
+
+            assert!(rec_cache.update(values.recording, width as u32, height as u32, 0));
+            let rec_raster = rec_cache.raster().unwrap();
+            assert!(rec_raster
+                .pixels
+                .iter()
+                .all(|pixel| matches!(pixel >> 24, 0 | 255)));
+            composite_raster(&mut actual, width, rec_raster);
+            assert!(
+                actual == expected,
+                "{width}x{height}: raster composition differs"
+            );
+        }
+
+        // A black outline is covered black, not an uncovered transparent pixel.
+        assert!(menu_cache.raster().pixels.contains(&0xff00_0000));
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[test]
+    fn menu_raster_cache_tracks_visible_content_and_reuses_closed_menu() {
+        let mut menu = open();
+        let mut values = values();
+        let mut cache = MenuRasterCache::default();
+        assert!(cache.update(&menu, 641, 401, &values));
+        assert!(!cache.update(&menu, 641, 401, &values));
+
+        values.recording = Some(61_000);
+        assert!(cache.update(&menu, 641, 401, &values));
+        values.recording = Some(61_999);
+        assert!(!cache.update(&menu, 641, 401, &values));
+
+        menu.handle(Key::Down, &values);
+        assert!(cache.update(&menu, 641, 401, &values));
+        let running = Values {
+            serial: link(true, LineStatus::Connecting("host:1".into())),
+            ..values.clone()
+        };
+        assert!(cache.update(&menu, 641, 401, &running));
+        let locked = Values {
+            mute_locked: true,
+            ..running
+        };
+        assert!(cache.update(&menu, 641, 401, &locked));
+        assert!(cache.update(&menu, 643, 401, &locked));
+        assert!(!cache.update(&menu, 643, 401, &locked));
+
+        let mut identical_menu = open();
+        let mut identical_cache = MenuRasterCache::default();
+        assert!(identical_cache.update(&identical_menu, 641, 401, &values));
+        assert!(!identical_menu.toggle());
+        assert!(!identical_cache.update(&identical_menu, 641, 401, &values));
+        assert!(identical_menu.toggle());
+        assert!(!identical_cache.update(&identical_menu, 641, 401, &values));
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[test]
+    fn recording_raster_cache_tracks_clock_pulse_and_size() {
+        let mut cache = RecRasterCache::default();
+        assert!(cache.raster().is_none());
+        assert!(cache.update(Some(61_000), 641, 401, 0));
+        let bright = cache.raster().unwrap().clone();
+        assert!(bright.pixels.contains(&0xffff_0000));
+        assert!(!cache.update(Some(61_999), 641, 401, 0));
+        assert!(cache.update(Some(61_999), 641, 401, 500));
+        let dim = cache.raster().unwrap().clone();
+        assert!(dim.pixels.contains(&0xff80_0000));
+        assert!(!cache.update(None, 641, 401, 500));
+        assert_eq!(cache.raster(), Some(&dim));
+        assert!(!cache.update(None, 643, 401, 500));
+        assert!(cache.update(Some(61_999), 643, 401, 500));
     }
 }
