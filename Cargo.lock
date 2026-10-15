@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "gp64"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "cpal",
@@ -837,7 +837,7 @@ dependencies = [
 
 [[package]]
 name = "gp64-bios"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "gp64-cpu",
@@ -861,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "gp64-cpu"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bitflags 2.13.2",
@@ -880,7 +880,7 @@ dependencies = [
 
 [[package]]
 name = "gp64-disasm"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "gp64-cpu",
  "iced-x86",
@@ -888,7 +888,7 @@ dependencies = [
 
 [[package]]
 name = "gp64-dos"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "gp64-cpu",
@@ -919,14 +919,14 @@ dependencies = [
 
 [[package]]
 name = "gp64-hygiene"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "gp64-dos",
 ]
 
 [[package]]
 name = "gp64-interp"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "criterion",
  "gp64-cpu",
@@ -959,7 +959,7 @@ dependencies = [
 
 [[package]]
 name = "gp64-memory"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "blake3",
  "criterion",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "gp64-memory-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "gp64-types",
 ]
@@ -987,11 +987,11 @@ dependencies = [
 
 [[package]]
 name = "gp64-opl2"
-version = "0.2.1"
+version = "0.2.2"
 
 [[package]]
 name = "gp64-pic"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1000,7 +1000,7 @@ dependencies = [
 
 [[package]]
 name = "gp64-pit"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1009,11 +1009,11 @@ dependencies = [
 
 [[package]]
 name = "gp64-rtc"
-version = "0.2.1"
+version = "0.2.2"
 
 [[package]]
 name = "gp64-types"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "blake3",
  "libc",
