@@ -123,10 +123,16 @@ impl EventWaitClock {
         (self.cursor_us, self.anchor_remainder, self.anchor_rate) = clock.guest_time();
     }
     fn sync(&mut self, clock: &Timeline, bios: &mut Bios, memory: &mut Memory) {
+        if !bios.event_wait_active() {
+            return;
+        }
         let (whole_us, remainder, rate) = clock.guest_time();
         // floor(current time - start fraction), including after CPU retiming.
-        let below_start_phase =
-            remainder * u128::from(self.anchor_rate) < self.anchor_remainder * u128::from(rate);
+        let below_start_phase = if rate == self.anchor_rate {
+            remainder < self.anchor_remainder
+        } else {
+            remainder * u128::from(self.anchor_rate) < self.anchor_remainder * u128::from(rate)
+        };
         let aligned_us = whole_us.saturating_sub(u64::from(below_start_phase));
         bios.tick_event_wait(aligned_us.saturating_sub(self.cursor_us), memory);
         self.cursor_us = self.cursor_us.max(aligned_us);
@@ -516,6 +522,8 @@ impl DosMachine {
                     // Ending every run at each RETF and IRET instead makes
                     // far-call-heavy guest code many times slower.
                     machine.cpu.far_return_watch = mouse.awaiting_return();
+                    machine.poll_boundary_wanted =
+                        bios.event_wait_active() || mouse.poll_boundary_wanted();
                     return InterruptAction::Handled;
                 };
                 let exec = if (vector == 0x21

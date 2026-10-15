@@ -63,10 +63,12 @@ pub struct CompletedFrame {
     pub cycle: u64,
 }
 /// Interpreter runs: each ends at the next device event, the budget, or a
-/// port access. Many short runs mean the per-run overhead dominates.
+/// port access requiring machine service.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Slices {
     pub total: u64,
+    /// Interpreter runs that returned `RunResult::IoCompleted`. Runs that
+    /// performed I/O but returned another result are excluded.
     pub io: u64,
 }
 /// Owned CPU, RAM (including VGA planes), and the fixed PC hardware.
@@ -77,6 +79,7 @@ pub struct Machine {
     clock: Timeline,
     io_fraction: u64,
     slices: Slices,
+    poll_boundary_wanted: bool,
     modem: Option<modem::TcpModem>,
     null_modem: Option<nullmodem::NullModem>,
     exception_defaults: Option<(u32, [Option<u32>; 32])>,
@@ -104,6 +107,7 @@ impl Machine {
             clock,
             io_fraction: 0,
             slices: Slices::default(),
+            poll_boundary_wanted: false,
             modem: None,
             null_modem: None,
             exception_defaults: None,
@@ -177,7 +181,7 @@ impl Machine {
         self.advance();
         self.clock.retime(&mut self.io, rate);
     }
-    /// Interpreter runs so far, and how many of them a port access ended.
+    /// Interpreter runs so far, and how many required service after port I/O.
     pub fn slices(&self) -> Slices {
         self.slices
     }
@@ -269,14 +273,19 @@ impl Machine {
         end: u64,
         mut hook: impl FnMut(&mut Self, Option<u8>) -> InterruptAction,
     ) -> RunExit {
+        let mut needs_advance = true;
         while self.cycle() < end {
-            self.advance();
+            if needs_advance {
+                self.advance();
+            }
+            needs_advance = false;
             if let Some(exit) = self.side_effects() {
                 return exit;
             }
             if self.cpu.is_protected_mode() {
                 return RunExit::UnsupportedExecution(RunResult::ModeChange { executed: 0 });
             }
+            self.poll_boundary_wanted = false;
             if matches!(hook(self, None), InterruptAction::Yield) {
                 return RunExit::BudgetUsed;
             }
@@ -294,19 +303,22 @@ impl Machine {
                     }
                 }
             }
+            self.io.pic.take_deliverability_dirty();
             let horizon = self.clock.next().unwrap_or(end).min(end);
             if self.cpu.halted {
                 if self.clock.next().is_none() {
                     return RunExit::Halted;
                 }
                 self.cpu.cycles = horizon;
+                needs_advance = true;
                 continue;
             }
             let mut bus = Bus {
                 devices: &mut self.io,
                 clock: &mut self.clock,
                 delay: 0,
-                accessed: false,
+                horizon,
+                poll_boundary_wanted: self.poll_boundary_wanted,
                 timestamp: self.cpu.cycles,
                 fraction: &mut self.io_fraction,
             };
@@ -322,13 +334,21 @@ impl Machine {
             );
             self.cpu.cycles += u64::from(result.charged_cycles) + bus.delay;
             self.slices.total += 1;
-            self.slices.io += u64::from(bus.accessed);
+            self.slices.io += u64::from(matches!(result.result, RunResult::IoCompleted { .. }));
             gp64_interp::sync_on_exit(&mut self.cpu);
             self.advance();
             match result.result {
                 RunResult::SoftwareInterrupt { vector, .. } => {
                     match hook(self, Some(vector)) {
-                        InterruptAction::Handled => continue,
+                        InterruptAction::Handled => {
+                            needs_advance = self.clock.now != self.cycle()
+                                || self.io.vga.pipeline_dirty()
+                                || self.io.vga.has_pending_timing_change()
+                                || self.io.serial.event_reschedule_pending
+                                || self.modem.is_some()
+                                || self.null_modem.is_some();
+                            continue;
+                        }
                         InterruptAction::Yield => return RunExit::SoftwareInterrupt { vector },
                         InterruptAction::Deliver => {}
                     }
@@ -390,7 +410,9 @@ impl Machine {
                 other => return RunExit::UnsupportedExecution(other),
             }
         }
-        self.advance();
+        if needs_advance || self.clock.now != self.cycle() {
+            self.advance();
+        }
         if let Some(exit) = self.side_effects() {
             return exit;
         }

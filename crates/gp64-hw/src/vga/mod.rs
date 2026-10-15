@@ -881,6 +881,10 @@ impl Vga {
         std::mem::replace(&mut self.mode_change_pending, false)
     }
 
+    pub fn has_pending_timing_change(&self) -> bool {
+        self.mode_change_pending || self.pending_timing_cycles_per_frame.is_some()
+    }
+
     /// Snapshot of VGA registers expected to remain stable within a single video mode.
     /// Used by the VGA sentinel to detect unexpected register changes within a video mode.
     pub fn snapshot_stable_registers(&self) -> VgaStableSnapshot {

@@ -399,7 +399,7 @@ impl SpeedLog {
             let seconds = elapsed.as_secs_f64();
             tracing::info!(
                 target: "gp64::speed",
-                "guest {:.1} MHz of {:.1} MHz, host busy {:.0}%, {:.0}k runs/s ({:.0}k ended by I/O)",
+                "guest {:.1} MHz of {:.1} MHz, host busy {:.0}%, {:.0}k runs/s ({:.0}k I/O service exits)",
                 cycle.saturating_sub(self.cycle) as f64 / seconds / 1e6,
                 rate as f64 / 1e6,
                 self.busy.as_secs_f64() / seconds * 100.0,

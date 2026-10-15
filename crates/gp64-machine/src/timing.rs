@@ -33,6 +33,7 @@ pub(crate) struct Timeline {
     pub rate: u64,
     pub now: u64,
     events: Vec<Deadline>,
+    next: Option<u64>,
     pit_remainder: [u128; 3],
     pit_rising: [bool; 3],
     scan_remainder: u128,
@@ -55,6 +56,7 @@ impl Timeline {
             rate,
             now: 0,
             events: Vec::new(),
+            next: None,
             pit_remainder: [0; 3],
             pit_rising: [false; 3],
             scan_remainder: 0,
@@ -81,9 +83,10 @@ impl Timeline {
         if let Some(cycle) = cycle {
             self.events.push(Deadline { event, cycle });
         }
+        self.next = self.events.iter().map(|d| d.cycle).min();
     }
     pub fn next(&self) -> Option<u64> {
-        self.events.iter().map(|d| d.cycle).min()
+        self.next
     }
     /// Elapsed guest microseconds and their fractional numerator/denominator.
     pub(crate) fn guest_time(&self) -> (u64, u128, u64) {
@@ -189,15 +192,16 @@ impl Timeline {
     }
     /// Advance devices at event timestamps, never at the caller's late instruction boundary.
     pub fn advance(&mut self, io: &mut IoBus, target: u64) {
-        while let Some((index, deadline)) = self
-            .events
-            .iter()
-            .copied()
-            .enumerate()
-            .filter(|(_, d)| d.cycle <= target)
-            .min_by_key(|(_, d)| d.cycle)
-        {
+        while self.next.is_some_and(|next| next <= target) {
+            let (index, deadline) = self
+                .events
+                .iter()
+                .copied()
+                .enumerate()
+                .min_by_key(|(_, d)| d.cycle)
+                .expect("cached deadline exists");
             self.events.remove(index);
+            self.next = self.events.iter().map(|d| d.cycle).min();
             self.advance_continuous(io, deadline.cycle);
             match deadline.event {
                 Event::Pit(channel) => {
@@ -297,11 +301,22 @@ impl Timeline {
     }
     fn advance_continuous(&mut self, io: &mut IoBus, target: u64) {
         let elapsed = target.saturating_sub(self.now);
+        if elapsed == 0 {
+            return;
+        }
         io.vga.tick(elapsed);
         io.serial.advance_to_cycle(target);
-        let us = u128::from(elapsed) * 1_000_000 + self.rtc_us_remainder;
-        self.rtc_us_remainder = us % u128::from(self.rate);
-        let elapsed_us = (us / u128::from(self.rate)) as u64;
+        let elapsed_us = if let Some(us) = elapsed
+            .checked_mul(1_000_000)
+            .and_then(|us| us.checked_add(self.rtc_us_remainder as u64))
+        {
+            self.rtc_us_remainder = u128::from(us % self.rate);
+            us / self.rate
+        } else {
+            let us = u128::from(elapsed) * 1_000_000 + self.rtc_us_remainder;
+            self.rtc_us_remainder = us % u128::from(self.rate);
+            (us / u128::from(self.rate)) as u64
+        };
         self.guest_us = self.guest_us.saturating_add(elapsed_us);
         if elapsed_us != 0 && io.cmos.advance_clock(elapsed_us) {
             io.pic.raise_irq(8);
@@ -982,7 +997,8 @@ mod tests {
             devices: io,
             clock: timeline,
             delay: 0,
-            accessed: false,
+            horizon: u64::MAX,
+            poll_boundary_wanted: false,
             timestamp,
             fraction: &mut fraction,
         }
@@ -1171,7 +1187,8 @@ mod tests {
             devices: io,
             clock: timeline,
             delay: 0,
-            accessed: false,
+            horizon: u64::MAX,
+            poll_boundary_wanted: false,
             timestamp,
             fraction,
         };
@@ -1189,7 +1206,8 @@ mod tests {
             devices: io,
             clock: timeline,
             delay: 0,
-            accessed: false,
+            horizon: u64::MAX,
+            poll_boundary_wanted: false,
             timestamp,
             fraction,
         };

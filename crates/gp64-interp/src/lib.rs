@@ -3341,16 +3341,18 @@ fn write_context_flags(flags_reg: Flags, lazy: LazyOp) -> Flags {
     snapshot_flags
 }
 #[inline]
-fn interp_arch_cycles(cpu: &Cpu, charged_cycles: u32) -> u64 {
-    cpu.cycles.wrapping_add(charged_cycles as u64)
+fn interp_arch_cycles(cpu: &Cpu, charged_cycles: u32, io_delay: u64) -> u64 {
+    cpu.cycles
+        .wrapping_add(charged_cycles as u64)
+        .wrapping_add(io_delay)
 }
 #[inline]
-fn interp_read_tsc(cpu: &Cpu, charged_cycles: u32) -> u64 {
-    cpu.tsc_from_arch_cycles(interp_arch_cycles(cpu, charged_cycles))
+fn interp_read_tsc(cpu: &Cpu, charged_cycles: u32, io_delay: u64) -> u64 {
+    cpu.tsc_from_arch_cycles(interp_arch_cycles(cpu, charged_cycles, io_delay))
 }
 #[inline]
-fn interp_write_tsc(cpu: &mut Cpu, charged_cycles: u32, value: u64) {
-    let arch = interp_arch_cycles(cpu, charged_cycles);
+fn interp_write_tsc(cpu: &mut Cpu, charged_cycles: u32, io_delay: u64, value: u64) {
+    let arch = interp_arch_cycles(cpu, charged_cycles, io_delay);
     cpu.write_tsc_at(arch, value);
 }
 #[inline]
@@ -8231,6 +8233,7 @@ fn op_0f<M: X86Machine>(
     snap_ip: u32,
     executed: u32,
     charged_cycles: u32,
+    io_delay: u64,
     _cs_bits: u32,
     cs_effective_limit: u32,
     pm: bool,
@@ -10308,7 +10311,7 @@ fn op_0f<M: X86Machine>(
             }
             let value = (u64::from(cpu.regs.edx) << 32) | u64::from(cpu.regs.eax);
             if cpu.regs.ecx == gp64_cpu::msr::MSR_IA32_TIME_STAMP_COUNTER {
-                interp_write_tsc(cpu, charged_cycles, value);
+                interp_write_tsc(cpu, charged_cycles, io_delay, value);
             } else if gp64_cpu::msr::write_msr(cpu, cpu.regs.ecx, value).is_err() {
                 materialize_flags(&mut flags_reg, &mut lazy);
                 cpu.regs.set_eip(ip_val);
@@ -10347,7 +10350,7 @@ fn op_0f<M: X86Machine>(
                     });
                 }
             }
-            let tsc = interp_read_tsc(cpu, charged_cycles);
+            let tsc = interp_read_tsc(cpu, charged_cycles, io_delay);
             cpu.regs.eax = tsc as u32;
             cpu.regs.edx = (tsc >> 32) as u32;
         }
@@ -10376,7 +10379,7 @@ fn op_0f<M: X86Machine>(
                 });
             }
             let msr_value = if cpu.regs.ecx == gp64_cpu::msr::MSR_IA32_TIME_STAMP_COUNTER {
-                Ok(interp_read_tsc(cpu, charged_cycles))
+                Ok(interp_read_tsc(cpu, charged_cycles, io_delay))
             } else {
                 gp64_cpu::msr::read_msr(cpu, cpu.regs.ecx)
             };
@@ -27619,6 +27622,7 @@ fn run_ext_inner_core<M: X86Machine, IO: IoPort, X: ExecPolicy<M>>(
                         snap_ip,
                         executed,
                         charged_cycles,
+                        io.io_delay_total(),
                         cs_bits,
                         cs_effective_limit,
                         pm,
@@ -29541,13 +29545,16 @@ fn run_ext_inner_core<M: X86Machine, IO: IoPort, X: ExecPolicy<M>>(
                         executed,
                     };
                 }
-                if M::QUIET_POLL_BOUNDARY
-                    && !X::ACTIVE
+                // An opting-in bus guarantees no delivery before the next
+                // cycle-budget or I/O stop, so the shadow needs no host trip.
+                // Policies and memory-owned poll requests still take precedence.
+                if !X::ACTIVE
+                    && (M::QUIET_POLL_BOUNDARY || !io.interrupt_poll_wanted())
+                    && (!M::QUIET_POLL_BOUNDARY || !mem.poll_boundary_wanted())
                     && unusual & UNUSUAL_INTERRUPT_POLL_BOUNDARY != 0
                     && cycle_budget.is_none_or(|cycle_budget| {
                         (charged_cycles as u64).saturating_add(io.io_delay_total()) < cycle_budget
                     })
-                    && !mem.poll_boundary_wanted()
                 {
                     cpu.interrupt_inhibit = 0;
                     unusual &= !UNUSUAL_INTERRUPT_POLL_BOUNDARY;

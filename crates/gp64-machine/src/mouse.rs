@@ -227,6 +227,9 @@ impl Mouse {
     pub(crate) fn awaiting_return(&self) -> bool {
         self.callback.is_some()
     }
+    pub(crate) fn poll_boundary_wanted(&self) -> bool {
+        self.pending != 0 || self.cursor_dirty
+    }
     pub(crate) fn boundary(&mut self, cpu: &mut Cpu, memory: &mut Memory) -> Result<(), CpuError> {
         if cpu.regs.cs == 0xf000 && cpu.regs.ip() == 0xff40 {
             if let Some(saved) = self.callback.take() {

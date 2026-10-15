@@ -1071,6 +1071,11 @@ impl Bios {
         false
     }
 
+    /// An INT 15h AH=83h flag write still needs instruction-boundary polling.
+    pub fn event_wait_active(&self) -> bool {
+        self.event_wait_active
+    }
+
     /// Tick the INT 15h AH=83h event wait timer.
     ///
     /// Call from the emulator loop with elapsed microseconds. When the

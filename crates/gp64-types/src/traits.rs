@@ -130,6 +130,13 @@ pub trait IoPort {
     /// Update the absolute cycle position visible to timing-sensitive devices.
     fn set_cpu_cycles(&mut self, _cycles: u64) {}
 
+    /// Whether an interrupt-enable/shadow boundary needs caller attention.
+    /// A bus may return false only while no IRQ or host hook needs polling;
+    /// the cycle budget must still stop execution at the next device deadline.
+    fn interrupt_poll_wanted(&self) -> bool {
+        true
+    }
+
     fn read_u8(&mut self, port: u16) -> u8;
     fn read_u16(&mut self, port: u16) -> u16;
     fn read_u32(&mut self, port: u16) -> u32;

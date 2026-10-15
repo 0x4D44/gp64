@@ -1047,15 +1047,14 @@ impl<W: PicWiring> Pic<W> {
     /// OCW2 bit encoding: R(7) SL(6) EOI(5) 0 0 L2 L1 L0
     pub fn write_command(&mut self, pic_num: u8, value: u8) {
         // C3/A-C3-1: ICW1 re-initialisation and OCW2 (EOI / rotation /
-        // priority) both change deliverability. OCW3 (register read select,
-        // bit3=1 bit4=0 bit5=0) does not — guests poll IRR/ISR through it, so
-        // marking it would spuriously truncate polling loops.
+        // priority) both change deliverability. OCW3 special-mask commands
+        // do too; register read selects do not, so IRR/ISR polling stays quiet.
         let is_icw1 = value & 0x10 != 0;
         // MDD-BUG-FLUX-00169: the OCW2/OCW3 discriminator is bit 3 ALONE (with
-        // bit 4 clear). Bit 5 is ESMM in OCW3 and EOI in OCW2, so testing it
+        // bit 4 clear). Bit 5 is SMM in OCW3 and EOI in OCW2, so testing it
         // here sent every special-mask command down the OCW2 path.
         let is_ocw3 = !is_icw1 && value & 0x08 != 0;
-        if !is_ocw3 {
+        if !is_ocw3 || value & 0x40 != 0 {
             self.note_deliverability_change();
         }
         let irq0_before =
@@ -1123,7 +1122,7 @@ impl<W: PicWiring> Pic<W> {
                 "PIC: ICW1 (init start)"
             );
         } else if value & 0x08 != 0 {
-            // OCW3: bit 4 = 0, bit 3 = 1. Bit 5 (ESMM) and bit 6 (SMM) belong
+            // OCW3: bit 4 = 0, bit 3 = 1. Bit 6 (ESMM) and bit 5 (SMM) belong
             // to OCW3 and must NOT be part of the discriminator — see
             // MDD-BUG-FLUX-00169, where 0x68 (enter special mask mode) was
             // decoded as OCW2 specific EOI for IRQ0 and corrupted the ISR.
@@ -4806,6 +4805,21 @@ mod tests {
         let current_mask = pic.master().mask;
         pic.write_data(0, current_mask);
         assert!(!pic.deliverability_dirty(), "unchanged IMR must not mark");
+    }
+
+    #[test]
+    fn ocw3_special_mask_commands_mark_deliverability() {
+        let mut pic = Pic::new();
+        pic.take_deliverability_dirty();
+        for chip in 0..2 {
+            for command in [0x68, 0x48] {
+                pic.write_command(chip, command);
+                assert!(
+                    pic.take_deliverability_dirty(),
+                    "PIC {chip}, command {command:#x}"
+                );
+            }
+        }
     }
 }
 
