@@ -85,7 +85,10 @@ host. Script `log` lines land in the same file, so a script can mark the span to
 read. Two scripted copies with `modem on` or `serial on` make a link test that
 needs no one at the keyboard. Give both copies the same `GP64_LINK_GROUP`, for
 example `GP64_LINK_GROUP=bench`, so they link only with each other and not with
-other gp64 copies on the network.
+other gp64 copies on the network. Set `GP64_MODEM_RELAY=0` to keep a modem
+call's data on line audio for the whole call instead of handing it to the
+relay once connected. The modem logs its line's health under
+`gp64::modem::line`.
 
 ## Manual verification
 

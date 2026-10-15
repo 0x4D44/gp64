@@ -1174,8 +1174,35 @@ enum ModemState {
 /// Integrates AT command parsing, call setup tones, V.8 negotiation,
 /// V.32bis training, and QAM data mode. Exposes serial-port and DSP-tick
 /// interfaces suitable for integration with a UART emulation layer.
+/// How far a V.32bis call has handed one direction of its data over to
+/// a relaying peer, which carries the DTE bytes itself instead of audio.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RelayTx {
+    /// Bytes are modulated as usual.
+    #[default]
+    Off,
+    /// No new bytes are modulated, so those already sent can be decoded
+    /// before the line goes quiet.
+    Draining,
+    /// Bytes leave through [`ModemDsp::take_relay_tx`]; nothing is modulated.
+    On,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Relay {
+    tx: RelayTx,
+    /// Peer bytes arrive through [`ModemDsp::relay_receive`]; the line
+    /// audio is ignored, carrier loss included.
+    rx: bool,
+    /// The last tick sent only the escape half of a stuffed byte; its
+    /// second half, already at the queue's head, still belongs to the line.
+    split: bool,
+}
+
 pub struct ModemDsp {
     state: ModemState,
+    /// Data relay of the current call; see [`Self::relay_ready`].
+    relay: Relay,
     parser: AtParser,
     config: ModemConfig,
     /// DSP parameter profile (TCP vs PSTN tuning).
@@ -1259,6 +1286,7 @@ impl ModemDsp {
         let preemphasis = PreEmphasisFilter::new(profile.preemphasis_index);
         Self {
             state: ModemState::Idle,
+            relay: Relay::default(),
             parser: AtParser::new(),
             config,
             profile,
@@ -1584,6 +1612,71 @@ impl ModemDsp {
     // -----------------------------------------------------------------------
     // Status
     // -----------------------------------------------------------------------
+
+    /// Whether this call can hand its data to a relaying peer: a V.32bis
+    /// call without error correction, aligned and past its TX preamble.
+    pub fn relay_ready(&self) -> bool {
+        matches!(
+            self.state,
+            ModemState::Online {
+                rx_converge_count: 255,
+                tx_preamble_ticks: 0,
+                ..
+            }
+        )
+    }
+
+    /// Stops modulating new bytes, holding them for the relay, while the
+    /// line keeps sending idle flags so the peer decodes what was sent.
+    pub fn begin_relay_drain(&mut self) {
+        if self.relay_ready() && self.relay.tx == RelayTx::Off {
+            self.relay.tx = RelayTx::Draining;
+        }
+    }
+
+    /// Ends modulation after a drain: from now on the bytes this call
+    /// sends leave through [`Self::take_relay_tx`].
+    pub fn enter_relay_tx(&mut self) {
+        if self.relay.tx == RelayTx::Draining {
+            self.relay.tx = RelayTx::On;
+        }
+    }
+
+    /// Takes up to one tick's line rate of bytes to relay; empty unless
+    /// [`Self::enter_relay_tx`] has run on this call.
+    pub fn take_relay_tx(&mut self) -> Vec<u8> {
+        let ModemState::Online { rate_profile, .. } = &self.state else {
+            return Vec::new();
+        };
+        if self.relay.tx != RelayTx::On {
+            return Vec::new();
+        }
+        let count = rate_profile.bytes_per_tick().min(self.serial_tx_buf.len());
+        let bytes: Vec<u8> = self.serial_tx_buf.drain(..count).collect();
+        if let Some(ref mut session) = self.session {
+            session.tx_payload_bytes += bytes.len() as u64;
+        }
+        bytes
+    }
+
+    /// Stops decoding the line: the peer now relays its bytes, and its
+    /// silent line is not a lost carrier.
+    pub fn enter_relay_rx(&mut self) {
+        if matches!(self.state, ModemState::Online { .. }) {
+            self.relay.rx = true;
+        }
+    }
+
+    /// Delivers relayed peer bytes as if decoded from the line.
+    pub fn relay_receive(&mut self, bytes: &[u8]) {
+        if !self.relay.rx || bytes.is_empty() {
+            return;
+        }
+        if let Some(ref mut session) = self.session {
+            session.rx_payload_bytes += bytes.len() as u64;
+        }
+        Self::push_rx_capped(&mut self.serial_rx_buf, bytes.to_vec());
+    }
 
     /// Current modem phase.
     pub fn phase(&self) -> ModemPhase {
@@ -2011,6 +2104,7 @@ impl ModemDsp {
         }
         self.session = None;
         self.state = ModemState::Idle;
+        self.relay = Relay::default();
         // Call lifecycle boundary: drop the taps adapted to the echo path of
         // the call that just ended, so the next call starts from a clean
         // canceller rather than inheriting a stale impulse response. Also the
@@ -2947,6 +3041,7 @@ impl ModemDsp {
                         (None, None)
                     };
 
+                self.relay = Relay::default();
                 self.state = ModemState::Online {
                     modulator,
                     demodulator,
@@ -3227,12 +3322,17 @@ impl ModemDsp {
             // === TX path: HDLC framing -> scrambler -> modulation ===
 
             let mut tx_frame_buf: Vec<u8> = Vec::with_capacity(bytes_per_tick);
-            if *tx_preamble_ticks > 0 {
+            if self.relay.tx == RelayTx::On {
+                // The relay carries the bytes; the peer ignores this line.
+            } else if *tx_preamble_ticks > 0 {
                 *tx_preamble_ticks -= 1;
                 tx_frame_buf.resize(bytes_per_tick, 0x7E);
             } else {
                 while tx_frame_buf.len() < bytes_per_tick {
-                    if let Some(byte) = self.serial_tx_buf.pop_front() {
+                    // A drain still sends a split byte's second half.
+                    let take = self.relay.tx == RelayTx::Off || self.relay.split;
+                    self.relay.split = false;
+                    if let Some(byte) = take.then(|| self.serial_tx_buf.pop_front()).flatten() {
                         if let Some(ref mut session) = self.session {
                             session.tx_payload_bytes += 1;
                         }
@@ -3242,6 +3342,7 @@ impl ModemDsp {
                                 tx_frame_buf.push(byte ^ 0x20);
                             } else {
                                 self.serial_tx_buf.push_front(byte ^ 0x20);
+                                self.relay.split = true;
                                 if let Some(ref mut session) = self.session {
                                     session.tx_payload_bytes -= 1;
                                 }
@@ -3280,12 +3381,18 @@ impl ModemDsp {
             }
 
             // Generate 160 PCM samples at 16kHz.
-            for sample in line_out.iter_mut() {
-                *sample = modulator.next_sample();
+            if self.relay.tx == RelayTx::On {
+                line_out.fill(0);
+            } else {
+                for sample in line_out.iter_mut() {
+                    *sample = modulator.next_sample();
+                }
             }
 
             // === RX path: demodulation -> (trellis decode) -> descrambler -> HDLC ===
-            {
+            if self.relay.rx {
+                carrier_lost = false;
+            } else {
                 let rms = rms_energy(line_in);
                 if rms >= CARRIER_LOSS_RMS_THRESHOLD {
                     *silence_ticks = 0;

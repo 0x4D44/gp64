@@ -117,6 +117,85 @@ impl WireBuffer {
     pub fn clear(&mut self) {
         self.buf.clear();
     }
+
+    /// Takes every buffered byte, whole chunks or not: the rest of a
+    /// stream that has switched from PCM to relay frames.
+    pub fn take_bytes(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.buf)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Data relay
+// ---------------------------------------------------------------------------
+//
+// Two gp64 modems that both relay stop sending each other line audio once a
+// V.32bis call is online, and send the DTE bytes themselves. A relaying
+// engine opens each connection with RELAY_HELLO; a peer that never sends it
+// keeps the call on audio. Each direction switches on its own: the sender
+// ends its PCM with RELAY_MARKER, and everything after the marker is relay
+// frames, one length byte then that many data bytes.
+//
+// Both signal chunks are whole PCM frames of +1/-1 samples, -90 dBFS, so a
+// modem that does not relay hears 10 ms of silence. A modem never sends
+// them: its silence is exact zeros and its carrier is far louder.
+
+/// Builds a signal chunk whose samples spell `signature` as +1/-1 bits.
+const fn signal_chunk(signature: &[u8; CHUNK_SAMPLES / 8]) -> [i16; CHUNK_SAMPLES] {
+    let mut chunk = [0i16; CHUNK_SAMPLES];
+    let mut i = 0;
+    while i < CHUNK_SAMPLES {
+        chunk[i] = if signature[i / 8] & (0x80 >> (i % 8)) != 0 {
+            1
+        } else {
+            -1
+        };
+        i += 1;
+    }
+    chunk
+}
+
+/// Opens a relaying engine's side of a connection.
+pub const RELAY_HELLO: [i16; CHUNK_SAMPLES] = signal_chunk(b"gp64 modem relay v1:");
+
+/// Ends a direction's PCM; relay frames follow.
+pub const RELAY_MARKER: [i16; CHUNK_SAMPLES] = signal_chunk(b"gp64 relay data next");
+
+/// Most data bytes in one relay frame.
+pub const RELAY_FRAME_MAX: usize = u8::MAX as usize;
+
+/// Appends relay frames carrying `data` to `out`.
+pub fn encode_relay_frames(data: &[u8], out: &mut impl Extend<u8>) {
+    for frame in data.chunks(RELAY_FRAME_MAX) {
+        out.extend([frame.len() as u8]);
+        out.extend(frame.iter().copied());
+    }
+}
+
+/// Reassembles relay frames from the byte stream after a marker.
+#[derive(Default)]
+pub struct RelayFrames {
+    buf: Vec<u8>,
+}
+
+impl RelayFrames {
+    /// Adds received stream bytes and returns the data of every frame now
+    /// complete; a partial frame waits for the rest.
+    pub fn push(&mut self, data: &[u8]) -> Vec<u8> {
+        self.buf.extend_from_slice(data);
+        let mut out = Vec::new();
+        let mut at = 0;
+        while let Some(&len) = self.buf.get(at) {
+            let end = at + 1 + usize::from(len);
+            if end > self.buf.len() {
+                break;
+            }
+            out.extend_from_slice(&self.buf[at + 1..end]);
+            at = end;
+        }
+        self.buf.drain(..at);
+        out
+    }
 }
 
 impl Default for WireBuffer {

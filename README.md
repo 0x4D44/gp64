@@ -74,7 +74,9 @@ setting is the speed of the cable between the PC and its modem, not the
 modem's line speed (gp64's modem connects at up to 14400). F1GP exchanges
 data every frame, so on a 2400 bps cable it spends most of its time waiting
 and plays slowly however fast the host is. The serial link has no modem
-delay, so it is the quickest of the two.
+delay, so it is the quickest of the two. Once a modem call between two gp64
+copies is connected, they pass its data to each other directly instead of as
+line audio, so a network hiccup delays only the bytes caught in it.
 
 Both links are off by default, and gp64 opens no network sockets until one is
 turned on. A link then listens on a TCP port chosen by the system and

@@ -1,8 +1,11 @@
 //! Direct TCP phone line: Hayes bytes at the UART, 16 kHz PCM on the socket.
-//! DSP cadence and socket buffering share the same PCM sample clock.
+//! DSP cadence and socket buffering share the same PCM sample clock. Two
+//! real-time engines that both relay hand an online V.32bis call's data to
+//! the socket directly (see `gp64_modem::wire`), so a late packet delays
+//! only the bytes in it instead of adding to the audio backlog for good.
 use gp64_hw::serial::{mcr, SerialPorts};
 use gp64_modem::{
-    wire::{self, WireBuffer, CHUNK_SAMPLES, SILENCE},
+    wire::{self, RelayFrames, WireBuffer, CHUNK_SAMPLES, RELAY_HELLO, RELAY_MARKER, SILENCE},
     ModemConfig, ModemDsp, ModemPhase,
 };
 use std::{
@@ -528,6 +531,121 @@ struct Engine {
     first_accept: bool,
     discard_bytes: usize,
     health: LineHealth,
+    /// Only real-time lines relay, and `GP64_MODEM_RELAY=0` keeps a line on
+    /// audio for testing.
+    relay_enabled: bool,
+    relay: Relay,
+}
+/// Ticks a call must stay ready before its data moves to the relay.
+const RELAY_READY_TICKS: u32 = 100;
+/// Ticks of idle line between the last modulated byte and the marker, so
+/// the peer has decoded everything sent as audio.
+const RELAY_DRAIN_TICKS: u32 = 10;
+/// One connection's relay handover; see `gp64_modem::wire`.
+#[derive(Default)]
+struct Relay {
+    /// This engine relays: it opens with a hello and switches when it can.
+    enabled: bool,
+    /// The hello has yet to replace a silent outgoing frame.
+    hello_due: bool,
+    /// The peer opened with a hello.
+    peer: bool,
+    /// Consecutive ticks this call has been ready to relay.
+    ready: u32,
+    tx: RelayTx,
+    /// Peer bytes arrive as relay frames.
+    rx: bool,
+    frames: RelayFrames,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RelayTx {
+    #[default]
+    Off,
+    /// Idle ticks left before the marker.
+    Draining(u32),
+    On,
+}
+impl Relay {
+    /// A fresh connection, offering the relay when `enabled`.
+    fn start(enabled: bool) -> Self {
+        Self {
+            enabled,
+            hello_due: enabled,
+            ..Self::default()
+        }
+    }
+    /// What the line sends this tick in place of `line_out`, if anything.
+    fn outgoing(
+        &mut self,
+        dsp: &mut ModemDsp,
+        line_out: &[i16; CHUNK_SAMPLES],
+        out: &mut VecDeque<u8>,
+    ) {
+        if self.hello_due && *line_out == SILENCE {
+            self.hello_due = false;
+            out.extend(wire::encode_chunk(&RELAY_HELLO));
+            return;
+        }
+        match self.tx {
+            RelayTx::Off => {
+                if self.enabled && self.peer && dsp.relay_ready() {
+                    self.ready += 1;
+                } else {
+                    self.ready = 0;
+                }
+                if self.ready >= RELAY_READY_TICKS {
+                    dsp.begin_relay_drain();
+                    self.tx = RelayTx::Draining(RELAY_DRAIN_TICKS);
+                }
+                out.extend(wire::encode_chunk(line_out));
+            }
+            RelayTx::Draining(_) if !dsp.is_online() => {
+                self.tx = RelayTx::Off;
+                self.ready = 0;
+                out.extend(wire::encode_chunk(line_out));
+            }
+            RelayTx::Draining(left) if left > 1 => {
+                self.tx = RelayTx::Draining(left - 1);
+                out.extend(wire::encode_chunk(line_out));
+            }
+            RelayTx::Draining(_) => {
+                dsp.enter_relay_tx();
+                self.tx = RelayTx::On;
+                tracing::info!(target: "gp64::modem::line", "modem line: sending data by relay");
+                out.extend(wire::encode_chunk(&RELAY_MARKER));
+            }
+            RelayTx::On => wire::encode_relay_frames(&dsp.take_relay_tx(), out),
+        }
+    }
+    /// Peer audio for this tick, after any hello, marker and relay frames
+    /// in `wire` are handled.
+    fn incoming(
+        &mut self,
+        dsp: &mut ModemDsp,
+        wire: &mut WireBuffer,
+        health: &mut LineHealth,
+    ) -> [i16; CHUNK_SAMPLES] {
+        if !self.rx {
+            let queued = wire.chunks_available();
+            let chunk = wire.take_chunk();
+            health.tick(queued, chunk.is_none());
+            match chunk {
+                Some(chunk) if chunk == RELAY_HELLO => {
+                    self.peer = self.enabled;
+                    return SILENCE;
+                }
+                Some(chunk) if chunk == RELAY_MARKER && self.peer => {
+                    self.rx = true;
+                    dsp.enter_relay_rx();
+                    tracing::info!(target: "gp64::modem::line", "modem line: receiving data by relay");
+                }
+                chunk => return chunk.unwrap_or(SILENCE),
+            }
+        }
+        let data = self.frames.push(&wire.take_bytes());
+        dsp.relay_receive(&data);
+        SILENCE
+    }
 }
 /// How well the real-time PCM stream kept pace over the last few seconds.
 #[derive(Default)]
@@ -589,6 +707,9 @@ impl Engine {
             first_accept: false,
             discard_bytes: 0,
             health: LineHealth::default(),
+            relay_enabled: clock == ModemClock::RealTime
+                && std::env::var_os("GP64_MODEM_RELAY").is_none_or(|value| value != "0"),
+            relay: Relay::default(),
         }
     }
     fn configure_pcm_socket(socket: &TcpStream, clock: ModemClock) {
@@ -673,6 +794,8 @@ impl Engine {
             first_accept,
             discard_bytes,
             health,
+            relay_enabled,
+            relay,
         } = self;
         let result = connection.as_ref().and_then(|dial| match clock {
             ModemClock::RealTime => dial.poll(),
@@ -688,6 +811,7 @@ impl Engine {
                         .peer_addr()
                         .map_or_else(|_| "peer".into(), |peer| peer.to_string());
                     *stream = Some(incoming);
+                    *relay = Relay::start(*relay_enabled);
                     LineStatus::Connected(peer)
                 }
                 Err(error) => {
@@ -711,6 +835,7 @@ impl Engine {
                         Self::configure_pcm_socket(&incoming, *clock);
                         *first_tick = true;
                         *stream = Some(incoming);
+                        *relay = Relay::start(*relay_enabled);
                         *status.lock().unwrap_or_else(|e| e.into_inner()) =
                             LineStatus::Connected(peer.to_string());
                     }
@@ -739,7 +864,7 @@ impl Engine {
             *discard_bytes = 0;
         }
         let mut input = [0u8; 4096];
-        if dsp.take_flush_wire_request() {
+        if dsp.take_flush_wire_request() && !relay.rx {
             if *clock == ModemClock::RealTime {
                 // A flush may stop inside a frame. Discard its remaining tail
                 // when it arrives so the next frame starts at a PCM boundary.
@@ -804,19 +929,18 @@ impl Engine {
                     Err(_) => disconnect = true,
                 }
             }
-            let queued = wire.chunks_available();
-            let chunk = wire.take_chunk();
             if stream.is_some() {
-                health.tick(queued, chunk.is_none());
+                relay.incoming(dsp, wire, health)
+            } else {
+                wire.take_chunk().unwrap_or(SILENCE)
             }
-            chunk.unwrap_or(SILENCE)
         };
         let mut line_out = [0i16; CHUNK_SAMPLES];
         dsp.tick_dsp(&line_in, &mut line_out);
         disconnect |= before != ModemPhase::Idle && dsp.phase() == ModemPhase::Idle;
         if let Some(socket) = stream.as_mut() {
             // Keep partial writes queued; never change PCM sample alignment.
-            pending.extend(wire::encode_chunk(&line_out));
+            relay.outgoing(dsp, &line_out, pending);
             while !pending.is_empty() {
                 let (bytes, _) = pending.as_slices();
                 match socket.write(bytes) {
@@ -1521,5 +1645,110 @@ mod tests {
             dial(b"ATM0DT5551234\r").is_empty(),
             "M0 keeps the speaker off"
         );
+    }
+
+    /// Two real-time engines on one socket pair, ticked by hand: a call
+    /// dialled and answered, then `ticks` more ticks with `payload` fed to
+    /// each side's UART once both receivers have locked on, a second after
+    /// CONNECT and before a relay could switch. Returns what each side's
+    /// UART received after CONNECT.
+    fn relayed_call(
+        relays: [bool; 2],
+        payload: &[u8],
+        ticks: usize,
+    ) -> ([Vec<u8>; 2], [Box<Engine>; 2]) {
+        let (a, b) = socket_pair();
+        b.set_nonblocking(true).unwrap();
+        let queues = [(); 2].map(|()| Arc::new(Mutex::new(Queues::default())));
+        let mut engines = [Some(a), Some(b)].map(|socket| {
+            Box::new(Engine::new(
+                Arc::new(Mutex::new(Queues::default())),
+                None,
+                socket,
+                ModemClock::RealTime,
+            ))
+        });
+        for (side, engine) in engines.iter_mut().enumerate() {
+            engine.queues = Arc::clone(&queues[side]);
+            engine.relay = Relay::start(relays[side]);
+        }
+        queues[0].lock().unwrap().tx.extend(b"ATD5551234\r");
+        queues[1].lock().unwrap().tx.extend(b"ATA\r");
+        // Loopback delivery is quick but not instant: wait a little for the
+        // peer's frame, or a starved tick would put silence on the line.
+        let tick = |engines: &mut [Box<Engine>; 2]| {
+            for engine in engines.iter_mut() {
+                if let Some(socket) = engine.stream.as_ref() {
+                    let deadline = Instant::now() + Duration::from_millis(20);
+                    while !engine.relay.rx
+                        && socket.peek(&mut [0; wire::CHUNK_BYTES]).unwrap_or(0)
+                            + engine.wire.buffered_bytes()
+                            < wire::CHUNK_BYTES
+                        && Instant::now() < deadline
+                    {
+                        thread::yield_now();
+                    }
+                }
+                engine.tick();
+            }
+        };
+        let mut online = false;
+        for _ in 0..3000 {
+            tick(&mut engines);
+            if engines.iter().all(|engine| engine.dsp.is_online()) {
+                online = true;
+                break;
+            }
+        }
+        assert!(online, "the call never came online");
+        for _ in 0..100 {
+            tick(&mut engines);
+        }
+        assert!(engines.iter().all(|engine| engine.relay.tx == RelayTx::Off));
+        let mut received = [Vec::new(), Vec::new()];
+        for queue in &queues {
+            let mut queue = queue.lock().unwrap();
+            queue.rx.clear();
+            queue.tx.extend(payload);
+        }
+        for _ in 0..ticks {
+            tick(&mut engines);
+            for (side, queue) in queues.iter().enumerate() {
+                received[side].extend(queue.lock().unwrap().rx.drain(..));
+            }
+        }
+        (received, engines)
+    }
+
+    /// Every byte value, flag and escape included, several times over.
+    fn relay_payload() -> Vec<u8> {
+        (0..1500u32).map(|i| (i * 7 % 256) as u8).collect()
+    }
+
+    #[test]
+    fn two_relaying_engines_move_an_online_call_to_relay_without_losing_bytes() {
+        let payload = relay_payload();
+        // 1500 bytes at 12 a tick span the switch, about 110 ticks in;
+        // the rest is long past the 1.4 s carrier-loss timeout.
+        let (received, engines) = relayed_call([true, true], &payload, 600);
+        for engine in &engines {
+            assert!(engine.relay.tx == RelayTx::On, "this side never relayed");
+            assert!(engine.relay.rx, "this side never received by relay");
+            assert!(engine.dsp.is_online(), "relay lost the call");
+        }
+        assert_eq!(received[1], payload, "caller to answerer");
+        assert_eq!(received[0], payload, "answerer to caller");
+    }
+
+    #[test]
+    fn an_engine_that_does_not_relay_keeps_both_sides_on_audio() {
+        let payload = relay_payload();
+        let (received, engines) = relayed_call([true, false], &payload, 600);
+        for engine in &engines {
+            assert!(engine.relay.tx == RelayTx::Off && !engine.relay.rx);
+            assert!(engine.dsp.is_online());
+        }
+        assert_eq!(received[1], payload, "caller to answerer");
+        assert_eq!(received[0], payload, "answerer to caller");
     }
 }
