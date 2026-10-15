@@ -29,8 +29,7 @@ A fastest-lap message arriving on both copies at once.
 
 ![Two gp64 windows showing the same fastest-lap message](docs/screenshots/fastest-lap.png)
 
-The screenshots show the game's own artwork, which belongs to its rights
-holders and is not covered by gp64's licence.
+There's a video here as well: https://www.youtube.com/watch?v=PeTzJTES8a8
 
 ## Drop-in launch
 
