@@ -7,7 +7,6 @@ members = [
     "crates/gp64-cpu",
     "crates/gp64-disasm",
     "crates/gp64-dos",
-    "crates/gp64-fastmem",
     "crates/gp64-hw",
     "crates/gp64-hygiene",
     "crates/gp64-interp",
@@ -31,7 +30,6 @@ license = "GPL-3.0-or-later"
 gp64-types = { path = "crates/gp64-types" }
 gp64-memory-core = { path = "crates/gp64-memory-core" }
 gp64-memory = { path = "crates/gp64-memory" }
-gp64-fastmem = { path = "crates/gp64-fastmem" }
 gp64-cpu = { path = "crates/gp64-cpu" }
 gp64-disasm = { path = "crates/gp64-disasm" }
 gp64-hw = { path = "crates/gp64-hw" }
@@ -67,9 +65,6 @@ opt-level = 2
 opt-level = 2
 
 [profile.dev.package.gp64-memory-core]
-opt-level = 2
-
-[profile.dev.package.gp64-fastmem]
 opt-level = 2
 
 [profile.release]

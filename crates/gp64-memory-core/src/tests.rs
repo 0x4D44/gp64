@@ -517,7 +517,6 @@ fn null_machine_satisfies_the_contract_defaults() {
         assert!(!NullMachine::NATIVE_DEVICE_COMMIT);
         assert!(!NullMachine::WRITE_TRACKING);
         assert!(!NullMachine::DPMI_MAPPINGS);
-        assert!(!NullMachine::FASTMEM);
     }
 
     let mut machine = NullMachine::new(16 * 4096);
@@ -536,7 +535,6 @@ fn null_machine_satisfies_the_contract_defaults() {
         );
     }
     assert_eq!(machine.after_port_write(&mut NoIo, 0x3C5), PortSync::None);
-    assert!(machine.fastmem_jit_base().is_null());
     assert!(machine
         .native_device_store(GuestPhys(0xA0000), 0, 1)
         .is_none());

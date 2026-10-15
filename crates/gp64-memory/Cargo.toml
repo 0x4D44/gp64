@@ -17,13 +17,11 @@ emu_probes = []
 
 [dependencies]
 gp64-memory-core.workspace = true
-# The fastmem fault handler, window registry and census.
-gp64-fastmem.workspace = true
 gp64-types.workspace = true
 tracing.workspace = true
 blake3.workspace = true
 
-# Guest RAM reservation and the fastmem alias view (ram_backing.rs, fastmem.rs).
+# Guest RAM reservation and shared arena mappings (ram_backing.rs, arena.rs).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

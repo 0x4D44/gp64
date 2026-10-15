@@ -843,13 +843,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gp64-fastmem"
-version = "0.2.1"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "gp64-hw"
 version = "0.1.0"
 dependencies = [
@@ -910,7 +903,6 @@ version = "0.2.1"
 dependencies = [
  "blake3",
  "criterion",
- "gp64-fastmem",
  "gp64-memory-core",
  "gp64-types",
  "libc",

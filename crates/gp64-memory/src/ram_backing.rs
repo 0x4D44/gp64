@@ -5,10 +5,8 @@
 //! no access, the private RAM is committed read/write at its start, and growth
 //! commits more of the same reservation in place. Everything else in the
 //! reservation stays reserved and no-access until a session arena section
-//! replaces its arena portion. The reservation is large enough that
-//! `base + FASTMEM_PHYS_BIAS + linear` is inside it for every 32-bit linear
-//! address, which is what lets a second mapping of it serve as the JIT's
-//! fastmem window (`fastmem.rs`).
+//! replaces its arena portion. The reservation accommodates private RAM and
+//! the fixed physical layout of the flat-memory shared arena.
 //!
 //! - Unix: one `mmap(PROT_NONE, MAP_NORESERVE)`; commit is `mprotect`.
 //! - Windows: a `VirtualAlloc2` placeholder, split at [`PRIVATE_WINDOW_BYTES`].
@@ -16,7 +14,7 @@
 //!   `VirtualAlloc(MEM_COMMIT)`; the rest stays a placeholder so the arena
 //!   can replace it with a section view (`MapViewOfFile3`).
 //! - 32-bit hosts and wasm cannot reserve 4 GiB and keep a growable `Vec<u8>`
-//!   with the same API; they never offer fastmem or the arena.
+//!   with the same API; they do not offer the arena.
 //!
 //! **No whole slice.** The backing is sparse, so it never hands out a slice
 //! covering the reservation, and has no `Deref`/`AsRef` to `[u8]`. Indexing
@@ -42,20 +40,26 @@ use crate::arena::{
 };
 use crate::arena_smc::ArenaSmc;
 
-use gp64_fastmem::FASTMEM_PHYS_BIAS;
+/// Flat-memory layout: guest physical = linear + this bias. Linear `0x10000`
+/// maps to physical `0x0100_0000`; arena watches use the same translation.
+pub(crate) const FLAT_MEMORY_PHYS_BIAS: usize = 0x00FF_0000;
+
+/// Fixed host reservation for private RAM and the shared arena. Preserve the
+/// 4 GiB linear span plus 16 MiB of slack, aligned for host page sizes up to
+/// 16 MiB. This also exceeds `MAX_RAM_SIZE + FETCH_PADDING`.
 #[cfg(target_pointer_width = "64")]
-use gp64_fastmem::RAM_RESERVATION_BYTES;
+pub(crate) const RAM_RESERVATION_BYTES: usize = (1usize << 32) + 0x0100_0000;
 
 /// Reservation offset where the private window ends: the physical address of
 /// guest linear `0x8000_0000`, where the flat-memory shared arena starts (HLD §5.2
 /// "Placement"). Private RAM always lies below it, and on Windows the
 /// reservation is split here so the arena range stays a placeholder. 64 KiB
 /// aligned, as `VirtualAlloc2` placeholder splits require.
-pub const PRIVATE_WINDOW_BYTES: usize = FASTMEM_PHYS_BIAS + 0x8000_0000;
+pub const PRIVATE_WINDOW_BYTES: usize = FLAT_MEMORY_PHYS_BIAS + 0x8000_0000;
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(RAM_RESERVATION_BYTES >= FASTMEM_PHYS_BIAS + (1usize << 32) + 0x1_0000);
+    assert!(RAM_RESERVATION_BYTES >= FLAT_MEMORY_PHYS_BIAS + (1usize << 32) + 0x1_0000);
     assert!(PRIVATE_WINDOW_BYTES >= crate::MAX_RAM_SIZE + crate::FETCH_PADDING);
     assert!(PRIVATE_WINDOW_BYTES < RAM_RESERVATION_BYTES);
     assert!(PRIVATE_WINDOW_BYTES.is_multiple_of(0x1_0000));
@@ -125,7 +129,7 @@ struct ArenaAttachment {
     /// (`Memory::refresh_arena_hle_hook`). `None` costs a mutable arena
     /// access one test.
     hle_smc: Option<(u32, Arc<Mutex<ArenaSmc>>)>,
-    /// The bound dyncore snoop, for HLE writes into this process's own
+    /// The bound SMC snoop, for HLE writes into this process's own
     /// arena code.
     hle_notifier: Option<Arc<dyn SmcNotify>>,
 }
@@ -1065,7 +1069,7 @@ mod vec_backed {
     use std::ptr::NonNull;
 
     /// RAM in a growable `Vec`. Growth past the capacity may move it, so these
-    /// hosts report no stable reservation and never offer fastmem.
+    /// hosts report no stable reservation or shared arena support.
     pub(super) struct Storage(Vec<u8>);
 
     impl Storage {

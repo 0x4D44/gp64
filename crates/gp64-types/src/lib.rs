@@ -13,7 +13,6 @@ pub use fixed_collections::{
 pub mod byte_stream_marker;
 pub mod debug_texture_mode;
 pub use debug_texture_mode::DebugTextureMode;
-pub mod drc_env;
 
 pub use byte_stream_marker::ByteStreamMarker;
 

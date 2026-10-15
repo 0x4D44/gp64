@@ -192,8 +192,6 @@ pub unsafe trait X86Machine:
     const WRITE_TRACKING: bool;
     /// `PagedMemory::map_linear_physical` can return `Some`.
     const DPMI_MAPPINGS: bool;
-    /// A fastmem window may exist.
-    const FASTMEM: bool;
 
     // ── core view ───────────────────────────────────────────────────────
     /// The one embedded core. Hot.
@@ -403,13 +401,6 @@ pub unsafe trait X86Machine:
     #[inline]
     fn after_port_write<IO: IoPort>(&mut self, _io: &mut IO, _port: u16) -> PortSync {
         PortSync::None
-    }
-
-    // ── fastmem ─────────────────────────────────────────────────────────
-    /// The fastmem JIT base for a DRC dispatch, or null. Default: null.
-    #[inline]
-    fn fastmem_jit_base(&self) -> *const u8 {
-        core::ptr::null()
     }
 
     // ── descriptor-table snoop (M2 LLD §8 erratum 9) ────────────────────

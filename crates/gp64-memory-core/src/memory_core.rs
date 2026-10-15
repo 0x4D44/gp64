@@ -3,8 +3,8 @@
 //!
 //! The RAM backing and the public fault latch stay on the machine type in M1:
 //! engines still read them as public `Memory` fields, and M1 leaves the engines
-//! unchanged. Machine address transforms, device/ROM policy and the fastmem
-//! projection stay in the machine's wrappers; every predicate reaches the core
+//! unchanged. Machine address transforms and device/ROM policy stay in the
+//! machine's wrappers; every predicate reaches the core
 //! as an argument the machine proved (HLD R2).
 //!
 //! Fields retain their existing names and are ordered by alignment to avoid

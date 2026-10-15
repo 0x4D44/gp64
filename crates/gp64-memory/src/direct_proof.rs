@@ -369,9 +369,6 @@ impl Memory {
     pub fn on_snapshot_restored(&mut self) {
         self.invalidate_tlb();
         self.invalidate_all_direct_proofs();
-        // Restore rewrote the page tables in place: re-derive the fastmem
-        // projection from them.
-        self.fastmem_reproject_all();
     }
 
     /// Resize the RAM backing to `new_len` total bytes, including fetch

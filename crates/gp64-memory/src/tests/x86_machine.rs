@@ -116,10 +116,6 @@ fn pc_memory_is_the_audited_pc_machine() {
         assert!(Memory::WRITE_TRACKING);
         assert!(Memory::DPMI_MAPPINGS);
     }
-    assert_eq!(
-        Memory::FASTMEM,
-        cfg!(all(target_os = "macos", target_arch = "aarch64"))
-    );
     let mem = Memory::new();
     assert!(std::ptr::eq(X86Machine::core(&mem), &mem.core));
 }

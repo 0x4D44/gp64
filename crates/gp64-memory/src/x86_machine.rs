@@ -116,8 +116,6 @@ unsafe impl X86Machine for Memory {
     const NATIVE_DEVICE_COMMIT: bool = true;
     const WRITE_TRACKING: bool = true;
     const DPMI_MAPPINGS: bool = true;
-    /// The fastmem alias view exists only on macOS/aarch64 hosts.
-    const FASTMEM: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
     /// The PIC and the interrupt poll live outside memory (`timing.rs`).
     const QUIET_POLL_BOUNDARY: bool = false;
     /// Real chipsets return open bus above installed RAM (the fetch arms
@@ -493,21 +491,6 @@ unsafe impl X86Machine for Memory {
     #[inline(always)]
     fn has_linear_physical_mappings(&self) -> bool {
         self.has_physical_mappings()
-    }
-
-    #[inline(always)]
-    fn fastmem_jit_base(&self) -> *const u8 {
-        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-        {
-            Memory::fastmem_jit_base(self)
-                .map(<*mut u8>::cast_const)
-                .or_else(gp64_fastmem::dead_window_jit_base)
-                .unwrap_or(core::ptr::null())
-        }
-        #[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
-        {
-            core::ptr::null()
-        }
     }
 
     // ── descriptor-table snoop (M2.4a; the PC bodies stay the inherent

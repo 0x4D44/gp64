@@ -24,7 +24,6 @@
 pub mod arena;
 pub mod arena_smc;
 pub mod direct_proof;
-pub mod fastmem;
 mod ram_backing;
 mod x86_machine;
 pub use x86_machine::PcAccessPolicy;
@@ -63,7 +62,7 @@ use std::ptr::NonNull;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use gp64_fastmem::FASTMEM_PHYS_BIAS;
+use ram_backing::FLAT_MEMORY_PHYS_BIAS;
 
 use gp64_types::span_write_census;
 use gp64_types::{FixedVec, IoCpuMode, MemoryAccess, PagedMemory, SmcNotify, VgaPipelineState};
@@ -1191,8 +1190,8 @@ pub struct Memory {
     /// may grow it up to `MAX_RAM_SIZE + FETCH_PADDING` via over-capacity
     /// growth (WI-G1). All size changes go through `resize_ram`, which
     /// retires direct page-proof host pointers before the allocation can move
-    /// or shrink (see `direct_proof` module). On 64-bit Unix the backing sits
-    /// in a fixed host reservation and never moves (`ram_backing.rs`); other
+    /// or shrink (see `direct_proof` module). On 64-bit hosts the backing sits
+    /// in a fixed host reservation and never moves (`ram_backing.rs`); 32-bit
     /// hosts keep a `Vec`, which over-capacity growth may move.
     ///
     /// This remains publicly byte-addressable for legacy cross-crate tests and
@@ -1200,9 +1199,6 @@ pub struct Memory {
     /// from resizing or replacing its allocation. Size changes must use
     /// [`Memory::resize_ram`] or a higher-level memory-owned API.
     pub ram: RamBacking,
-    /// JIT alias view of `ram` with guest protections (fastmem stage 2),
-    /// created by [`Memory::enable_fastmem_view`] on the HLE flat-memory route.
-    fastmem: Option<fastmem::FastmemView>,
     /// EMS backing storage owned by the memory core. The HLE INT 67h layer
     /// owns logical handles and maps them to these physical pool pages.
     ems_pool: Vec<u8>,
@@ -1940,7 +1936,7 @@ impl Memory {
         // ceiling (and the pointer-stability `ensure_ram_size` relies on) survives.
         //
         // `RamBacking::zeroed` keeps that shape: on 64-bit Unix it commits the
-        // capacity inside a fixed host reservation (fastmem stage 1), which the
+        // capacity inside a fixed host reservation, which the
         // kernel zero-fills on first touch just the same.
         let mut ram = RamBacking::zeroed(
             DOS_RAM_CEILING + FETCH_PADDING,
@@ -1991,7 +1987,6 @@ impl Memory {
         let ram_base = RamBasePtr(ram.host_base());
         let mut memory = Self {
             ram,
-            fastmem: None,
             ems_pool: Vec::new(),
             ems_frame_map: [None; EMS_PHYSICAL_PAGES],
             hle_ems_frame_owned: false,
@@ -2251,12 +2246,11 @@ impl Memory {
     #[inline]
     fn invalidate_after_physical_state_swap(&mut self) {
         // Physical routing and backing pointers changed. Retire every TLB,
-        // direct-proof, flat-view, and fastmem assumption before execution can
-        // resume. The public invalidation hook also advances the A20 and map
-        // generations consumed by native engines.
+        // direct-proof and flat-view assumption before execution can resume.
+        // The public invalidation hook also advances the A20 and map
+        // generations used to invalidate cached translations.
         self.invalidate_all_direct_proofs();
         self.flush_tlb_full();
-        self.fastmem_reproject_all();
         self.clear_instr_exec_pages();
         self.core.set_instr_cache_dirty();
         self.core.bump_pt_write_epoch();
@@ -3742,7 +3736,7 @@ impl Memory {
         if !self.ram.has_arena_mapping() {
             return;
         }
-        let physical_page = ((addr + FASTMEM_PHYS_BIAS) >> 12) as u32;
+        let physical_page = ((addr + FLAT_MEMORY_PHYS_BIAS) >> 12) as u32;
         if !self.arena.instr_watches.insert(physical_page) {
             return;
         }
@@ -4829,13 +4823,10 @@ impl Memory {
     ///
     /// Every arena TLB entry, flat view and direct proof this `Memory`
     /// published was already retired when it gave the token up
-    /// (`take_arena_admission`), and `give_arena_admission` re-derived the
-    /// arena's fastmem permissions from the current PTEs. What survives the
-    /// park is the dyncores' premises: the edit went through the other
-    /// process's `Memory`, so this one's PT tripwire never saw it, and a DBX
-    /// link keep or memo whose baseline predates it would still pass. Bump
-    /// the PT-write epoch (a PT content edit) and drop any arena entry the
-    /// TLB still holds, which moves the translation epoch.
+    /// (`take_arena_admission`). The edit went through the other process's
+    /// `Memory`, so this one's PT tripwire never saw it. Bump the PT-write
+    /// epoch and drop any arena entry the TLB still holds, which moves the
+    /// translation epoch.
     pub fn retire_foreign_arena_translations(&mut self) {
         self.invalidate_cached_arena_translations();
         self.core.bump_pt_write_epoch();
@@ -4947,7 +4938,7 @@ impl Memory {
     }
 
     /// Re-derive one arena page's watch after this process's own interest in
-    /// it changed: the session count (while mounted), the flat/fastmem write
+    /// it changed: the session count (while mounted), the flat-view write
     /// revocation (own OR remote), and whether HLE writes need the hook.
     fn publish_arena_watch(&mut self, physical_page: u32) {
         let own = self.arena.local_watches.contains(&physical_page)
@@ -4983,21 +4974,12 @@ impl Memory {
 
     #[inline]
     fn set_flat_page_watched(&mut self, physical_page: u32, on: bool) {
-        if self.fastmem.is_none() {
-            self.core.set_page_watched(physical_page, on);
-            return;
-        }
-        let before = self.is_page_watched(physical_page);
         self.core.set_page_watched(physical_page, on);
-        if self.is_page_watched(physical_page) != before {
-            // Watched code pages are read-only in the fastmem window.
-            self.fastmem_reproject_physical_page(physical_page);
-        }
     }
 
     /// Mount half of the process seam (HLD §5.4): publish this process's own
     /// arena watches to the session, take the union with every other
-    /// process's (revoking flat and fastmem write access on those pages), and
+    /// process's (revoking flat-view write access on those pages), and
     /// arm the remote-interest gate. The caller then binds the native caches
     /// and replays the arena write log since this process's cursor.
     pub fn attach_arena_smc(&mut self, pid: u32, state: Arc<Mutex<arena_smc::ArenaSmc>>) {
@@ -8188,19 +8170,14 @@ impl Memory {
     ) -> std::io::Result<()> {
         self.invalidate_all_direct_proofs();
         self.flush_tlb_full();
-        self.ram.attach_arena(store.clone())?;
+        self.ram.attach_arena(store)?;
         self.core
             .ensure_page_generation_coverage(arena::ARENA_PHYS_END);
-        if let Err(error) = self.fastmem_attach_arena_alias(&store) {
-            self.ram.detach_arena();
-            return Err(error);
-        }
         self.core.ensure_watch_pages(arena::ARENA_PHYS_END >> 12);
         let arena_words = (arena::ARENA_PHYS_END / INSTR_EXEC_PAGE_SIZE).div_ceil(64);
         if self.core.instr_exec_pages().len() < arena_words {
             self.core.resize_instr_exec_pages(arena_words);
         }
-        self.fastmem_reproject_all();
         Ok(())
     }
 
@@ -8208,10 +8185,9 @@ impl Memory {
     /// mutable borrow makes prior `mem.ram[..]` references end first.
     ///
     /// Every host pointer this `Memory` published into the arena (software
-    /// TLB entries, which also back the DBX flat views, and direct page
-    /// proofs) is retired first; the macOS fastmem alias loses the arena's
-    /// permissions. When nothing arena-backed was published since the last
-    /// take, the TLB and proofs stay as they are.
+    /// TLB entries, which also back the flat views, and direct page proofs)
+    /// is retired first. When nothing arena-backed was published since the
+    /// last take, the TLB and proofs stay as they are.
     pub fn take_arena_admission(&mut self) -> Option<arena::ArenaAdmission> {
         if !self.ram.has_arena_admission() {
             return None;
@@ -8220,18 +8196,14 @@ impl Memory {
             self.invalidate_all_direct_proofs();
             self.invalidate_cached_arena_translations();
         }
-        let token = self.ram.take_admission();
-        self.fastmem_reproject_arena();
-        token
+        self.ram.take_admission()
     }
 
     /// Admit this process after its section view is attached. While it was
     /// unadmitted nothing could publish an arena pointer (every publication
-    /// checks `is_backed`), so no TLB entry needs retiring; only the fastmem
-    /// alias regains the arena's permissions.
+    /// checks `is_backed`), so no TLB entry needs retiring.
     pub fn give_arena_admission(&mut self, token: arena::ArenaAdmission) {
         self.ram.give_admission(token);
-        self.fastmem_reproject_arena();
     }
 
     /// Commit a host arena range before a guest PTE points to it.
@@ -8246,10 +8218,7 @@ impl Memory {
     pub fn detach_arena_store(&mut self) -> Option<arena::ArenaAdmission> {
         self.invalidate_all_direct_proofs();
         self.flush_tlb_full();
-        self.fastmem_detach_arena_alias();
-        let token = self.ram.detach_arena();
-        self.fastmem_reproject_all();
-        token
+        self.ram.detach_arena()
     }
 
     /// Resize usable RAM while preserving the fetch-safety padding.
@@ -8301,8 +8270,6 @@ impl Memory {
             0
         };
         self.core.resize_instr_exec_pages(words.max(arena_words));
-        // Pages at the RAM boundary change fastmem eligibility.
-        self.fastmem_reproject_all();
     }
 
     /// Ensure RAM is at least the specified size (for DOS memory allocation).

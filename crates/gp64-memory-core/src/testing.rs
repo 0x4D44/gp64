@@ -344,7 +344,6 @@ unsafe impl X86Machine for NullMachine {
     const NATIVE_DEVICE_COMMIT: bool = false;
     const WRITE_TRACKING: bool = false;
     const DPMI_MAPPINGS: bool = false;
-    const FASTMEM: bool = false;
     const QUIET_POLL_BOUNDARY: bool = false;
     /// Open bus above RAM, as the PC.
     const OPEN_BUS_FETCH_ABOVE_RAW_LIMIT: bool = true;
