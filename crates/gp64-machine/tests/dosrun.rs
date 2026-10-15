@@ -130,6 +130,38 @@ fn launch_preserves_entire_bios_rom_font_advertised_by_int10() {
     }
 }
 
+#[test]
+fn launch_starts_on_a_blank_light_grey_text_screen() {
+    let drive = Drive::new();
+    // Read the character and attribute under the cursor, then stop.
+    drive.put(
+        "CELL.COM",
+        &[0xb4, 0x08, 0xb7, 0x00, 0xcd, 0x10, 0xfa, 0xf4],
+    );
+    let mut pc = drive.launch("CELL.COM");
+    assert!(matches!(pc.run_for(1000).unwrap(), DosRunExit::Running));
+    assert!(pc.machine.cpu.halted, "cell fixture reached HLT");
+    // Setup programs clear the screen with the attribute they read here, then
+    // print through DOS, which keeps each cell's attribute.
+    assert_eq!(
+        pc.machine.cpu.regs.ax(),
+        0x0720,
+        "blank cell, light grey on black"
+    );
+
+    drive.put("PRINT.COM", &print_program(b"Select", 0));
+    let mut pc = drive.launch("PRINT.COM");
+    finish(&mut pc, 0);
+    let frame = pc.machine.frame();
+    assert!(
+        frame
+            .pixels
+            .iter()
+            .any(|&index| frame.palette[usize::from(index)] != (0, 0, 0)),
+        "DOS output is visible on the launch screen"
+    );
+}
+
 // Independent INT 15h/AH=83h fixtures use a flag outside the COM image.
 const EVENT_WAIT_FLAG: usize = 0x5000;
 fn event_wait_program(halt: bool) -> Vec<u8> {

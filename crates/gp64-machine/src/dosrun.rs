@@ -164,8 +164,12 @@ impl DosMachine {
             bail!("C: mount is not a directory");
         }
         let mut machine = Machine::new();
-        let bios = Bios::new();
+        let mut bios = Bios::new();
         bios.init_ivt(&mut machine.memory, false);
+        // POST leaves mode 3 set: blank cells, light grey on black. Setup
+        // programs clear the screen with the attribute under the cursor.
+        machine.cpu.regs.set_ax(0x0003);
+        bios.int10(&mut machine.cpu, &mut machine.memory, &mut machine.io.vga)?;
         // Exceptions without guest handlers must remain observable to the caller.
         for vector in (0..8).chain([0x31, 0x67]) {
             machine.memory.write_u32(vector * 4, 0);
