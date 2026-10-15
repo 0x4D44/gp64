@@ -162,6 +162,42 @@ fn launch_starts_on_a_blank_light_grey_text_screen() {
     );
 }
 
+#[test]
+fn launch_presents_a_486() {
+    let drive = Drive::new();
+    // Setup programs tell a 486 from a 386 by toggling EFLAGS.AC (bit 18).
+    drive.put(
+        "AC.COM",
+        &[
+            0x66, 0x9c, // pushfd
+            0x66, 0x58, // pop eax
+            0x66, 0x89, 0xc1, // mov ecx,eax
+            0x66, 0x35, 0x00, 0x00, 0x04, 0x00, // xor eax,40000h
+            0x66, 0x50, // push eax
+            0x66, 0x9d, // popfd
+            0x66, 0x9c, // pushfd
+            0x66, 0x58, // pop eax
+            0x66, 0x31, 0xc8, // xor eax,ecx
+            0x66, 0xc1, 0xe8, 0x12, // shr eax,18
+            0x24, 0x01, // and al,1
+            0xb4, 0x4c, 0xcd, 0x21, // exit with AL
+        ],
+    );
+    finish(&mut drive.launch("AC.COM"), 1);
+    // A 486 also executes its new instructions rather than raising #UD.
+    drive.put(
+        "BSWAP.COM",
+        &[
+            0x66, 0xb8, 0x44, 0x33, 0x22, 0x11, // mov eax,11223344h
+            0x66, 0x0f, 0xc8, // bswap eax
+            0x66, 0x3d, 0x11, 0x22, 0x33, 0x44, // cmp eax,44332211h
+            0x0f, 0x94, 0xc0, // sete al
+            0xb4, 0x4c, 0xcd, 0x21, // exit with AL
+        ],
+    );
+    finish(&mut drive.launch("BSWAP.COM"), 1);
+}
+
 // Independent INT 15h/AH=83h fixtures use a flag outside the COM image.
 const EVENT_WAIT_FLAG: usize = 0x5000;
 fn event_wait_program(halt: bool) -> Vec<u8> {

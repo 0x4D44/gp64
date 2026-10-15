@@ -7,7 +7,7 @@ use crate::{
 };
 use anyhow::{bail, Context, Result};
 use gp64_bios::{Bios, Int16Disp};
-use gp64_cpu::{Cpu, Flags, Registers, SegmentCache};
+use gp64_cpu::{Cpu, CpuType, Flags, Registers, SegmentCache};
 use gp64_dos::{filesystem::HostDrive, Dos, Int21Disposition, XmsDispatch};
 use gp64_hw::{bda, keyboard::Keyboard};
 use gp64_memory::Memory;
@@ -164,6 +164,8 @@ impl DosMachine {
             bail!("C: mount is not a directory");
         }
         let mut machine = Machine::new();
+        // Setup programs pick their fastest presets for a 486.
+        machine.cpu.set_cpu_type(CpuType::I80486);
         let mut bios = Bios::new();
         bios.init_ivt(&mut machine.memory, false);
         // POST leaves mode 3 set: blank cells, light grey on black. Setup
