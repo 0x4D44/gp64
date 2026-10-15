@@ -83,7 +83,9 @@ many displayed frames changed per second. Set `GP64_MAX_MHZ` to cap the automati
 rate, for example `GP64_MAX_MHZ=16`, to see how the program behaves on a slower
 host. Script `log` lines land in the same file, so a script can mark the span to
 read. Two scripted copies with `modem on` or `serial on` make a link test that
-needs no one at the keyboard.
+needs no one at the keyboard. Give both copies the same `GP64_LINK_GROUP`, for
+example `GP64_LINK_GROUP=bench`, so they link only with each other and not with
+other gp64 copies on the network.
 
 ## Manual verification
 

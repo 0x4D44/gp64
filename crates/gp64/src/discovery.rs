@@ -57,6 +57,8 @@ pub struct Discovery {
     socket: Option<UdpSocket>,
     instance_id: u64,
     display_name: String,
+    /// What peers must advertise to be seen; see [`service_name`].
+    service: String,
     ports: Ports,
     last_advertisement: Option<Instant>,
     /// When a failed bind may be tried again.
@@ -73,6 +75,7 @@ impl Discovery {
             socket: None,
             instance_id: generate_instance_id(),
             display_name: local_display_name(),
+            service: service_name(std::env::var("GP64_LINK_GROUP").ok().as_deref()),
             ports: Ports::default(),
             last_advertisement: None,
             retry_bind: None,
@@ -153,7 +156,12 @@ impl Discovery {
         let Some(socket) = self.socket.as_ref() else {
             return;
         };
-        let packet = build_packet(self.ports, &self.display_name, self.instance_id);
+        let packet = build_packet(
+            &self.service,
+            self.ports,
+            &self.display_name,
+            self.instance_id,
+        );
         match send_to_discovery_targets(socket, &packet) {
             Ok(()) => self.error = None,
             Err(error) => self.error = Some(error.to_string()),
@@ -188,7 +196,7 @@ impl Discovery {
         if !usable_source(source.ip()) {
             return;
         }
-        let Some(parsed) = parse_packet(packet) else {
+        let Some(parsed) = parse_packet(&self.service, packet) else {
             return;
         };
         if parsed.instance_id == self.instance_id {
@@ -263,14 +271,31 @@ struct ParsedPacket {
     instance_id: u64,
 }
 
-fn build_packet(ports: Ports, name: &str, instance_id: u64) -> [u8; PACKET_SIZE] {
+/// The advertised service: `gp64`, or `gp64-GROUP` for a test group, so
+/// copies in a group link only with each other and never with ordinary
+/// copies on the network.
+fn service_name(group: Option<&str>) -> String {
+    let Some(group) = group.filter(|group| !group.is_empty()) else {
+        return SERVICE.to_owned();
+    };
+    let mut service = format!("{SERVICE}-");
+    for character in group.chars().filter(|c| c.is_ascii_graphic()) {
+        if service.len() + 1 > SERVICE_FIELD_SIZE - 1 {
+            break;
+        }
+        service.push(character);
+    }
+    service
+}
+
+fn build_packet(service: &str, ports: Ports, name: &str, instance_id: u64) -> [u8; PACKET_SIZE] {
     let mut packet = [0u8; PACKET_SIZE];
     packet[0..4].copy_from_slice(MAGIC);
     packet[4..6].copy_from_slice(&PROTOCOL_VERSION.to_le_bytes());
     packet[6..8].copy_from_slice(&ports.serial.to_le_bytes());
     packet[8..10].copy_from_slice(&ports.modem.to_le_bytes());
     let service_end = SERVICE_START + SERVICE_FIELD_SIZE;
-    write_fixed_string(&mut packet[SERVICE_START..service_end], SERVICE);
+    write_fixed_string(&mut packet[SERVICE_START..service_end], service);
     write_fixed_string(
         &mut packet[service_end..service_end + NAME_FIELD_SIZE],
         name,
@@ -279,7 +304,7 @@ fn build_packet(ports: Ports, name: &str, instance_id: u64) -> [u8; PACKET_SIZE]
     packet
 }
 
-fn parse_packet(data: &[u8]) -> Option<ParsedPacket> {
+fn parse_packet(service: &str, data: &[u8]) -> Option<ParsedPacket> {
     if data.len() != PACKET_SIZE || &data[0..4] != MAGIC {
         return None;
     }
@@ -292,7 +317,7 @@ fn parse_packet(data: &[u8]) -> Option<ParsedPacket> {
         modem: u16::from_le_bytes([data[8], data[9]]),
     };
     let service_end = SERVICE_START + SERVICE_FIELD_SIZE;
-    if read_fixed_string(&data[SERVICE_START..service_end])? != SERVICE {
+    if read_fixed_string(&data[SERVICE_START..service_end])? != service {
         return None;
     }
 
@@ -458,32 +483,51 @@ mod tests {
 
     #[test]
     fn packet_parser_filters_service_and_rejects_malformed_fields() {
-        let packet = build_packet(ports(23_001, 23_002), "workstation", 0x1234_5678_9ABC_DEF0);
-        let parsed = parse_packet(&packet).unwrap();
+        let packet = build_packet(
+            SERVICE,
+            ports(23_001, 23_002),
+            "workstation",
+            0x1234_5678_9ABC_DEF0,
+        );
+        let parsed = parse_packet(SERVICE, &packet).unwrap();
         assert_eq!(parsed.ports, ports(23_001, 23_002));
         assert_eq!(parsed.name, "workstation");
         assert_eq!(parsed.instance_id, 0x1234_5678_9ABC_DEF0);
 
         let mut wrong_service = packet;
         wrong_service[SERVICE_START] = b'x';
-        assert!(parse_packet(&wrong_service).is_none());
-        assert!(parse_packet(&packet[..PACKET_SIZE - 1]).is_none());
+        assert!(parse_packet(SERVICE, &wrong_service).is_none());
+        assert!(parse_packet(SERVICE, &packet[..PACKET_SIZE - 1]).is_none());
 
         let mut wrong_version = packet;
         wrong_version[4] = 1;
-        assert!(parse_packet(&wrong_version).is_none());
+        assert!(parse_packet(SERVICE, &wrong_version).is_none());
 
         let mut control_character = packet;
         control_character[SERVICE_START + SERVICE_FIELD_SIZE] = b'\n';
-        assert!(parse_packet(&control_character).is_none());
+        assert!(parse_packet(SERVICE, &control_character).is_none());
 
         let mut invalid_utf8 = packet;
         invalid_utf8[SERVICE_START + SERVICE_FIELD_SIZE] = 0xFF;
-        assert!(parse_packet(&invalid_utf8).is_none());
+        assert!(parse_packet(SERVICE, &invalid_utf8).is_none());
 
         let mut no_id = packet;
         no_id[PACKET_SIZE - 8..].fill(0);
-        assert!(parse_packet(&no_id).is_none());
+        assert!(parse_packet(SERVICE, &no_id).is_none());
+    }
+
+    #[test]
+    fn a_test_group_and_ordinary_copies_ignore_each_other() {
+        assert_eq!(service_name(None), "gp64");
+        assert_eq!(service_name(Some("")), "gp64");
+        let group = service_name(Some("bench 1"));
+        assert_eq!(group, "gp64-bench1");
+        assert!(service_name(Some(&"x".repeat(64))).len() < SERVICE_FIELD_SIZE);
+        let grouped = build_packet(&group, ports(1, 2), "a", 7);
+        let ordinary = build_packet(SERVICE, ports(1, 2), "b", 8);
+        assert!(parse_packet(SERVICE, &grouped).is_none());
+        assert!(parse_packet(&group, &ordinary).is_none());
+        assert_eq!(parse_packet(&group, &grouped).unwrap().instance_id, 7);
     }
 
     #[test]
@@ -516,7 +560,7 @@ mod tests {
         let now = Instant::now();
         let mut discovery = Discovery::new();
         let own_id = discovery.instance_id();
-        let self_packet = build_packet(ports(23_101, 0), "self", own_id);
+        let self_packet = build_packet(SERVICE, ports(23_101, 0), "self", own_id);
         discovery.process_datagram(
             &self_packet,
             SocketAddr::from(([127, 0, 0, 1], 23_517)),
@@ -525,7 +569,7 @@ mod tests {
         assert!(discovery.peers().is_empty());
 
         let peer_id = own_id.wrapping_add(1).max(1);
-        let packet = build_packet(ports(23_102, 0), "remote", peer_id);
+        let packet = build_packet(SERVICE, ports(23_102, 0), "remote", peer_id);
         discovery.process_datagram(&packet, SocketAddr::from(([127, 0, 0, 1], 23_517)), now);
         discovery.process_datagram(
             &packet,
@@ -540,7 +584,7 @@ mod tests {
         );
 
         // A later announcement replaces the ports; none open keeps the peer.
-        let busy = build_packet(ports(0, 0), "remote", peer_id);
+        let busy = build_packet(SERVICE, ports(0, 0), "remote", peer_id);
         discovery.process_datagram(
             &busy,
             SocketAddr::from(([192, 168, 1, 22], 23_518)),
@@ -579,9 +623,9 @@ mod tests {
         let receiver_addr = receiver.local_addr().unwrap();
         discovery.socket = Some(receiver);
 
-        let packet = build_packet(ports(23_111, 23_112), "local-host", peer_id);
+        let packet = build_packet(SERVICE, ports(23_111, 23_112), "local-host", peer_id);
         sender.send_to(&packet, receiver_addr).unwrap();
-        let self_packet = build_packet(ports(23_113, 0), "self", own_id);
+        let self_packet = build_packet(SERVICE, ports(23_113, 0), "self", own_id);
         sender.send_to(&self_packet, receiver_addr).unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(2);
