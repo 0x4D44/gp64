@@ -23,7 +23,7 @@ pub enum SseLevel {
     Fxsr,
 }
 
-/// Hot register-register PADDD semantics shared by native-engine callouts.
+/// Register-register PADDD semantics.
 #[inline]
 pub fn paddd_registers(cpu: &mut Cpu, destination: usize, source: usize) {
     let left = cpu.sse.xmm[destination];
@@ -5041,16 +5041,9 @@ mod tests {
 
     /// MDD-BUG-KIL-00762: FXSAVE built its image straight from `cpu.fpu.regs`.
     ///
-    /// Portable DRC binary64 mode deliberately leaves the F80 mirrors stale
-    /// across helper interludes, so a guest that did x87 arithmetic and then
-    /// FXSAVE'd wrote the PRE-operation bytes, and a later FXRSTOR brought
-    /// back corrupted numeric state. The executor now materializes the F80
-    /// register file first.
-    ///
-    /// The behaviour was fixed on trunk by 402d2dd0a ("perf(dyncore): defer
-    /// Fast x87 F80 mirrors"), which introduced the deferral and the guard
-    /// together but cited no bug. This is the regression the record asked for
-    /// and that commit did not carry.
+    /// A deferred binary64 update can leave the F80 mirrors stale. FXSAVE
+    /// must materialize them first so a later FXRSTOR restores the current
+    /// numeric state rather than the pre-operation bytes.
     #[test]
     fn fxsave_materializes_a_reverse_stale_drc_slot_before_saving() {
         use crate::x87_ops::F80;
@@ -5060,7 +5053,7 @@ mod tests {
         let physical = machine.cpu.fpu.get_st_idx(0);
 
         // The F80 mirror still reads 9.0 while the live binary64 value is
-        // 1.25 — exactly what the DRC leaves behind mid-sequence.
+        // 1.25, pending materialization.
         machine.cpu.fpu.seed_drc_reverse_stale_f64(physical, 1.25);
         assert_eq!(
             machine.cpu.fpu.regs[physical],

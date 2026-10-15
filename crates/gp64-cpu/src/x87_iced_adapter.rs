@@ -1,6 +1,6 @@
-//! Cold compatibility adapter for legacy engines, tests, and benchmarks.
+//! Cold compatibility adapter for tests and benchmarks.
 //!
-//! Production interpreter and dyncore x87 paths decode directly to
+//! The production interpreter decodes x87 instructions directly to
 //! [`DecodedX87`]. This module exists only for callers that already own an iced
 //! instruction and must not be used to construct a hot runtime path.
 

@@ -432,10 +432,6 @@ impl SseOp {
 
     /// Recover a form from the dense discriminant `op as u16`.
     ///
-    /// The dyncore SSE census keys its opcode table on that discriminant and
-    /// needs the name back when it renders a report, at which point the enum
-    /// value itself is long gone.
-    ///
     /// SAFETY of the transmute: `SseOp` is `#[repr(u16)]` and declares no
     /// explicit discriminants, so its values are exactly `0..COUNT`, and the
     /// bound below proves `code` names one.
@@ -920,14 +916,10 @@ impl SseOp {
         )
     }
 
-    /// Whether this form's memory operand must be 16-byte aligned (a
-    /// misaligned linear address raises #GP(0)).
-    ///
-    /// The class is the aligned moves, the non-temporal 16-byte stores, and
-    /// FXSAVE/FXRSTOR. Misaligned packed arithmetic executes
-    /// (MDD-BUG-CRUCIBLE-00775), so no arithmetic form is here. The executor
-    /// gates its alignment check on this, and native engines take their
-    /// alignment gate from it too, so the class has one definition.
+    /// Whether the memory operand requires 16-byte alignment (#GP(0) if
+    /// misaligned): aligned moves, non-temporal 16-byte stores and
+    /// FXSAVE/FXRSTOR. Packed arithmetic permits misalignment
+    /// (MDD-BUG-CRUCIBLE-00775). The executor uses this classification.
     #[inline]
     #[must_use]
     pub fn requires_16_byte_alignment(self) -> bool {

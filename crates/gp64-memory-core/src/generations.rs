@@ -9,27 +9,20 @@ use std::sync::Arc;
 
 use crate::publication::EngineGate;
 
-/// Allocate a fresh per-page generation table sized for `pinned_capacity`
-/// bytes of pinned RAM backing (one `u32` word per 4 KiB physical page).
-///
-/// The table is heap-pinned for the lifetime of the owning `Memory`: emitted
-/// guards hold raw per-entry addresses (via proof-slot fields) and bump them
-/// with single stores. It is replaced ONLY by over-capacity
-/// `Memory::resize_ram_backing`, which retires (never frees) the old table
-/// and advances `Memory::page_generation_table_identity`.
+/// Allocate one `u32` generation word per 4 KiB of pinned RAM capacity.
+/// The table is heap-pinned so raw per-entry pointers stay valid. Only
+/// over-capacity `Memory::resize_ram_backing` replaces it, retiring the
+/// old table without freeing it and advancing its identity epoch.
 pub(crate) fn new_page_generation_table(pinned_capacity: usize) -> Box<[Cell<u32>]> {
     (0..(pinned_capacity >> 12)).map(|_| Cell::new(0)).collect()
 }
 
-/// Mutable-provenance base pointer of the pinned RAM backing (DD-UNSAFE-1).
+/// Mutable-provenance base pointer of the pinned RAM backing.
 ///
-/// Captured via `RamBacking::host_base` (derived from the host mapping, never
-/// from a reference) in `Memory::new()` and re-captured by
-/// `Memory::resize_ram_backing`, so every published direct page-proof pointer
-/// derives from a pointer with WRITE provenance over the backing. Deriving the
-/// write pointer from a `&self`-borrowed slice instead would make every store through a
-/// published proof (host-side or emitted) undefined behavior under the Rust
-/// aliasing model.
+/// Captured from `RamBacking::host_base` at construction and resize,
+/// never from a reference. Published write pointers must retain WRITE
+/// provenance: deriving them from a shared slice would make stores
+/// undefined behavior under Rust's aliasing model.
 #[derive(Debug, Clone, Copy)]
 pub struct RamBasePtr(pub *mut u8);
 
@@ -40,16 +33,11 @@ pub struct RamBasePtr(pub *mut u8);
 // SoftwareTlb`, which holds host pointers into the same allocation.
 unsafe impl Send for RamBasePtr {}
 
-/// Stable-heap generations block for emitted single-load guards.
+/// Stable-heap generations block for direct-memory proofs.
 ///
-/// `#[repr(C)]` with six consecutive `u32` words (each field is a
-/// `Cell<u32>`, which has the same in-memory representation as `u32`).
-/// Field offsets, in declaration order: 0, 4, 8, 12, 16, 20.
-///
-/// Address stability: the block is heap-allocated (`Box`) when `Memory` is
-/// constructed and never replaced for the lifetime of the `Memory` value, so
-/// the pointer returned by `Memory::direct_generations_ptr` remains valid
-/// and stable even when the `Memory` struct itself is moved.
+/// The six `Cell<u32>` generation words have offsets 0, 4, 8, 12, 16, 20.
+/// The block is boxed at construction and never replaced, so its pointer
+/// stays valid for the owning `Memory`'s lifetime, including moves.
 #[repr(C)]
 #[derive(Debug)]
 pub struct DirectGenerations {
@@ -70,20 +58,14 @@ pub struct DirectGenerations {
     /// non-translation direct-memory policy (ROM/MMIO/VGA routing, RAM
     /// backing growth, source policy).
     pub policy_generation: Cell<u32>,
-    /// Word 5: global source-identity generation. Bumps on whole-memory
-    /// identity events (over-capacity RAM growth, snapshot restore) and on
-    /// every dynrec-side compiled-source event — range
-    /// registration/removal, foreign writes, and emitted SMC invalidation
-    /// stubs — via `Memory::bump_dynrec_source_generation_for_page`
-    /// (WI-C4/WI-G1). The per-page staleness signal lives in the
-    /// `PageGenerationTable`; this word is the global source-event stamp
-    /// (negative gap cache).
+    /// Word 5: global source-identity generation. Bumped by whole-memory
+    /// identity changes and page-targeted source events through
+    /// `Memory::bump_dynrec_source_generation_for_page`. Individual pages'
+    /// staleness is tracked separately in `PageGenerationTable`.
     pub source_generation: Cell<u32>,
-    /// Engine-entry depth and the publication poison latch. Not a generation word and never read by
-    /// emitted code: it
-    /// trails the words so their offsets are unchanged, and it lives in this
-    /// stable heap block so `MemoryCore` (and the PC `Memory` hot layout)
-    /// does not grow.
+    /// Engine-entry depth and the publication poison latch, separate from
+    /// the generation words. Kept in the stable heap block so adding it
+    /// does not grow `MemoryCore` or the PC `Memory` hot layout.
     pub(crate) engine_gate: Arc<EngineGate>,
 }
 
@@ -112,11 +94,9 @@ impl DirectGenerations {
         }
     }
 
-    /// Bump the global word 0. WI-G1: word 0 has NO emitted readers — it is
-    /// the Rust-side monotone staleness funnel and diagnostics counter only.
-    /// Production code must reach it through
-    /// `Memory::stale_all_guarded_pages`, which also bumps every guarded
-    /// page word (the words emitted guards actually read).
+    /// Bump global word zero, the monotonic staleness and diagnostic counter.
+    /// Production updates go through `Memory::stale_all_guarded_pages`,
+    /// which also bumps every guarded page's generation word.
     #[inline]
     pub(crate) fn bump_proof_word(&self) {
         self.proof_generation

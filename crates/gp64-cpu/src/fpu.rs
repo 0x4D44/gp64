@@ -913,21 +913,11 @@ pub mod single_arith_census {
     }
 }
 
-/// Runtime-only per-physical-register exactness proofs over the canonical F80
-/// register file (which stays authoritative outside dynrec-drc — HLD
-/// 2026.07.29 D1/D2): `bits` +
-/// `valid` prove the F80 bytes are an exact normal-or-zero binary32;
-/// `f64_bits` + `f64_valid` prove the same for binary64. Every f32-provable
-/// value is also f64-provable, so `valid ⊆ f64_valid` — maintained by routing
-/// ALL proof writes through `set_proofs`, the single entry that writes both
-/// masks (a writer physically cannot update one and forget the other).
-/// repr(C): the aarch64 drc backend's native ArithReg fast path (EXP-A018)
-/// reads and writes these fields from generated code through the pinned
-/// offsets in [`shadow_offsets`]. Declaration order matches the previous
-/// repr(Rust) layout byte for byte (asserted below), so no Fpu offset moves.
-/// NOTE the invariant doc above: `set_proofs` is the single RUST entry that
-/// writes both proof masks — the native fast path is the one sanctioned
-/// additional writer, and it transliterates `set_proofs`' accept arm exactly.
+/// Runtime-only per-physical-register exactness proofs over the canonical
+/// F80 register file. `bits` + `valid` prove an exact normal-or-zero binary32
+/// value; `f64_bits` + `f64_valid` prove the same for binary64. Every
+/// f32-provable value is also f64-provable, so `valid ⊆ f64_valid`.
+/// `set_proofs` maintains both masks together.
 #[repr(C)]
 #[derive(Clone, Debug, Default)]
 struct NumericShadow {
@@ -936,9 +926,8 @@ struct NumericShadow {
     valid: u8,
     f64_valid: u8,
     host_condition_codes_dirty: bool,
-    /// While true, `f64_bits` is the authoritative dynrec-drc register file;
-    /// `Fpu::regs` is its widened helper-visible mirror. This bit occupies
-    /// existing `NumericShadow` tail padding, preserving the fixed FPU ABI.
+    /// While true, `f64_bits` is authoritative and `Fpu::regs` is its
+    /// widened helper-visible mirror.
     drc_binary64_active: bool,
     /// Physical F80 mirrors that need rounding back into the binary64 file.
     /// This also occupies existing tail padding, so no native offset moves.
@@ -1203,9 +1192,9 @@ pub struct Fpu {
     pub operand_offset: u32,
     /// Data operand selector
     pub operand_selector: u16,
-    /// 108-byte x87 state buffer for FRSTOR/FNSAVE (JIT FPU support).
-    /// Populated by `sync_to_x87_save_area()` before JIT block execution,
-    /// read back by `sync_from_x87_save_area()` after.
+    /// 108-byte x87 state buffer in FRSTOR/FNSAVE format.
+    /// Written by `sync_to_x87_save_area()` and read by
+    /// `sync_from_x87_save_area()`.
     #[serde(with = "crate::serde_helpers::array_108")]
     pub x87_save_area: [u8; 108],
     /// `FOP` — the 11-bit opcode of the last non-control x87 instruction.
@@ -1213,11 +1202,6 @@ pub struct Fpu {
     /// Part of the x87 environment an exception handler reads to identify the
     /// faulting instruction; it lives in bits 26:16 of the dword at offset 16
     /// of the 32-bit protected-mode environment image, alongside FCS.
-    ///
-    /// Declared AFTER `x87_save_area` deliberately: the dyncore reads that
-    /// buffer at a fixed struct offset pinned by `FPU_REL_X87_SAVE_AREA`
-    /// (compile-time assert in `registers.rs`), so a field inserted before it
-    /// breaks the JIT layout.
     ///
     /// **Not yet written by guest execution** — that is the remaining half of
     /// MDD-BUG-CRUCIBLE-00578 and needs the opcode plumbed into the x87
@@ -1265,11 +1249,8 @@ impl Fpu {
         *self = Self::new();
     }
 
-    /// Select the portable DRC's binary64 x87 contract.
-    ///
-    /// The first call is the declared lossy F80-to-f64 engine-selection
-    /// boundary. Later calls are cheap: the shared file remains resident
-    /// across interpreter fallback interludes.
+    /// Select the binary64 x87 representation. The first call converts F80
+    /// values lossily; subsequent calls keep the current representation.
     pub fn enter_drc_binary64_mode(&mut self) {
         if self.numeric_shadow.drc_binary64_active {
             return;
@@ -1280,19 +1261,15 @@ impl Fpu {
         self.commit_drc_binary64_register_file();
     }
 
-    /// Whether the portable DRC owns the active x87 representation.
+    /// Whether binary64 is the active x87 representation.
     #[must_use]
     pub fn drc_binary64_mode_active(&self) -> bool {
         self.numeric_shadow.drc_binary64_active
     }
 
-    /// Materialize one reverse-stale canonical F80 mirror from the DRC's
-    /// authoritative binary64 register file.
-    ///
-    /// Generated code may update `f64_bits` without touching `regs`; this is
-    /// the explicit F80 observation barrier for helpers, diagnostics, and
-    /// save-state code. The two dirty masks are directional and never overlap:
-    /// materializing a slot clears both directions before returning.
+    /// Materialize one stale F80 mirror from the authoritative binary64
+    /// register file before a helper or diagnostic reads it. The directional
+    /// dirty masks never overlap; materialization clears both for the slot.
     pub fn materialize_drc_f80_register(&mut self, physical_index: usize) {
         let physical_index = physical_index & 7;
         let bit = 1u8 << physical_index;
@@ -1327,7 +1304,6 @@ impl Fpu {
 
     /// Physical slots whose F80 mirror the next
     /// [`Self::materialize_drc_f80_register_file`] would rebuild.
-    /// Diagnostic only (the DRC's F80 publication census).
     #[must_use]
     pub fn drc_f80_publication_mask(&self) -> u8 {
         if self.numeric_shadow.drc_binary64_active {
@@ -1355,28 +1331,15 @@ impl Fpu {
         }
     }
 
-    /// Invalidate the numeric shadow after an external operation has replaced
-    /// the raw F80 register file (for example FXRSTOR). The restored F80 bytes
-    /// are authoritative; active DRC binary64 slots must be recommitted from
-    /// them before a binary64 observer reads the shadow.
+    /// Invalidate the numeric shadow after an external F80 replacement
+    /// such as FXRSTOR. The restored F80 values must be recommitted before
+    /// a binary64 observer reads the shadow.
     pub fn invalidate_drc_f80_register_file(&mut self) {
         self.numeric_shadow.invalidate_all();
     }
 
-    /// Commit the helper-visible F80 mirror to the authoritative binary64
-    /// register file, then rebuild an exact widened mirror.
-    ///
-    /// EXP-A013: commits are DEFERRED — dirty slots accumulate across ops and
-    /// this runs at F80/alias read barriers and ownership exits, not per op.
-    /// Test-only: put a slot into the REVERSE-STALE state the portable DRC
-    /// leaves behind — a fresh binary64 value whose F80 mirror has not been
-    /// materialized yet.
-    ///
-    /// No production API can produce this: the aarch64 backend stores straight
-    /// into `f64_bits` from generated code (`drc_a64.rs`, "f64_bits[pi] =
-    /// result"). Without a seam, a test outside this module cannot reach the
-    /// state that MDD-BUG-KIL-00762 was about, which is why FXSAVE had no
-    /// regression covering it.
+    /// Test-only: seed a fresh binary64 value whose F80 mirror has not been
+    /// materialized, for the MDD-BUG-KIL-00762 observation-barrier regression.
     #[cfg(test)]
     pub(crate) fn seed_drc_reverse_stale_f64(&mut self, physical_index: usize, value: f64) {
         self.enter_drc_binary64_mode();
@@ -1442,16 +1405,10 @@ impl Fpu {
         // results): clear the re-dirty that `set_proofs`' no-proof arm just
         // applied, or such slots would never leave the needs-rounding set.
         self.numeric_shadow.drc_binary64_dirty &= !(1u8 << physical_index);
-        // Deliberately NO tag write here:
-        // the interpreter content-tags pushes (`push_with_proofs`) AND
-        // arithmetic results (`set_st`/`set_st_with_proofs`), and the JIT
-        // mirrors both at its own write sites (the push emitters and the
-        // native arith tail). The raw PHYSICAL setters stay tag-silent on
-        // both engines (FRSTOR restores image tags; FST ST(i) copies; FXCH
-        // swaps) — and this barrier runs on `invalidate_all`-dirtied slots
-        // (e.g. right after FRSTOR), so classifying here would destroy
-        // legitimately image-divergent tags. Tag parity is owned by each
-        // write site, never by this commit.
+        // Do not write tags here. Pushes and arithmetic results classify at
+        // their write sites; raw physical setters preserve tags for FRSTOR,
+        // FST ST(i) and FXCH. Reclassifying at this barrier would destroy tags
+        // deliberately restored from an environment image.
     }
 
     /// Status-word TOP field (bits 11-13).
@@ -1535,13 +1492,11 @@ impl Fpu {
         self.status_word & Self::STATUS_ES != 0
     }
 
-    /// Push value to stack
+    /// Push a value to the stack.
     ///
-    /// On full-stack overflow with IE masked, real x87 (and the JIT via
-    /// native FLD/FILD/FBLD/FNSAVE) still advances TOP and writes the
-    /// floating-point indefinite (QNaN) to the destination, per Intel
-    /// SDM Vol 1 §8.5.1.2. The vacated-turned-destination slot is
-    /// tagged as Special (the indefinite is a QNaN). Matches JIT parity.
+    /// On full-stack overflow with IE masked, advance TOP and write the
+    /// floating-point indefinite QNaN to the destination, tagged Special
+    /// (Intel SDM Vol 1 §8.5.1.2).
     pub fn push(&mut self, value: F80) {
         // One byte-scan yields the f64 proof; the f32 proof derives from it
         // (the exact-normal-or-zero f32 domain is a subset of the f64 one).
@@ -1556,10 +1511,8 @@ impl Fpu {
         let new_top = (top.wrapping_sub(1)) & 0x7;
         if !self.is_empty(new_top) {
             self.set_stack_fault(true);
-            // Advance TOP and write the F80 indefinite (QNaN) to the
-            // destination slot so subsequent ST(i) references resolve to
-            // the same physical slot as the JIT. Tag=Special (2) per SDM:
-            // the indefinite is a QNaN, not Valid/Zero.
+            // Advance TOP and write the indefinite QNaN to the destination,
+            // tagged Special rather than Valid or Zero.
             self.set_top(new_top);
             self.set_physical_reg(new_top, F80([0, 0, 0, 0, 0, 0, 0, 0xC0, 0xFF, 0xFF]));
             self.set_tag(new_top, 2); // Special
@@ -1593,13 +1546,10 @@ impl Fpu {
         self.push_with_proofs(canonical, derive_f32_proof(exact64), Some(exact64));
     }
 
-    /// Pop value from stack
+    /// Pop a value from the stack.
     ///
-    /// On empty-stack underflow with IE masked, real x87 (and the JIT
-    /// via native FSTP/FISTP/.../FNSAVE) still advances TOP, per Intel
-    /// SDM Vol 1 §8.5.1.1. The interpreter must mirror this so that
-    /// subsequent ST(i) references resolve to the same physical slot as
-    /// the JIT; otherwise multi-instruction FPU sequences diverge.
+    /// On empty-stack underflow with IE masked, still advance TOP so later
+    /// ST(i) references use the correct physical slots (SDM Vol 1 §8.5.1.1).
     pub fn pop(&mut self) -> F80 {
         let top = self.get_top();
         if self.is_empty(top) {
@@ -1702,9 +1652,7 @@ impl Fpu {
         self.set_tag(idx, value.x87_tag());
     }
 
-    /// ST(i)'s exact binary32 shadow, when it carries the f32 proof. Public
-    /// so the drc refusal census can name WHICH gate a native store leg
-    /// refused on (EXP-A036 W6a) without duplicating the proof rules.
+    /// ST(i)'s exact binary32 shadow, when it carries the f32 proof.
     #[inline]
     #[must_use]
     pub fn exact_binary32_st(&self, i: usize) -> Option<f32> {
@@ -1719,8 +1667,7 @@ impl Fpu {
     }
 
     #[inline]
-    /// Whether ST(i) carries a binary64 proof — the gate the native drc
-    /// arith paths test (EXP-A021 refusal diagnosis).
+    /// Whether ST(i) carries a binary64 proof.
     #[must_use]
     pub fn has_binary64_proof_st(&self, i: usize) -> bool {
         self.exact_binary64_st(i).is_some()
@@ -1796,24 +1743,10 @@ impl Fpu {
         &self.regs[idx]
     }
 
-    /// Restore the "a numeric proof implies a non-Empty slot" invariant after
-    /// a wholesale `tag_word` write (MDD-BUG-FLUX-00141).
-    ///
-    /// The shadow's `valid` / `f64_valid` masks say "this slot's F80 bytes are
-    /// exactly representable as binary32 / binary64", and every native x87 leg
-    /// in the drc backends gates on them alone, under the premise that a proof
-    /// implies the slot is architecturally readable. [`Self::set_tag`] is what
-    /// upheld that premise, so the two paths that bypass it and assign
-    /// `tag_word` directly — [`Self::emms`] and FLDENV/FRSTOR's
-    /// `decode_environment` — used to leave proofs standing on slots they had
-    /// just marked Empty. A native leg then served the op from the stale
-    /// shadow and popped, where the helper would have taken the stack-fault +
-    /// indefinite-write path: guest memory and SW diverged between JIT and
-    /// interpreter, breaking the drc parity contract.
-    ///
-    /// Fixing the two writers rather than the gates keeps the invariant true
-    /// for every present and future native leg, instead of re-deriving it at
-    /// each one.
+    /// Restore the invariant that a numeric proof implies a non-Empty slot
+    /// after a wholesale `tag_word` write (MDD-BUG-FLUX-00141).
+    /// `emms` and environment restores bypass `set_tag`, so they must remove
+    /// proofs for slots they mark Empty rather than expose stale shadows.
     fn invalidate_proofs_of_empty_slots(&mut self) {
         for reg in 0..8 {
             if self.get_tag(reg) == 3 {
@@ -1855,13 +1788,9 @@ impl Fpu {
 
     /// Set an exception flag in the status word.
     ///
-    /// For invalid-op exceptions on non-stack inputs (FIST/FISTP/FISTTP of
-    /// NaN, arith on SNaN), prefer the standalone `set_invalid_op_non_stack`
-    /// helper which also clears C1 per Intel SDM Vol 1 §8.5.1. Calling
-    /// `set_exception(0x01)` directly leaves C1 stale from any prior
-    /// overflow operation, which is a JIT-divergence bug — see HLD
-    /// `wrk_docs/2026.05.10 - HLD - JIT vs interp R1 gamma residual
-    /// FBLD-FBSTP BCD indefinite EFLAGS divergence.md` §11.
+    /// For non-stack invalid operations, use `set_invalid_op_non_stack`
+    /// to also clear C1 (Intel SDM Vol 1 §8.5.1). Calling this method with
+    /// IE alone leaves C1 stale from a prior overflow.
     pub fn set_exception(&mut self, flag: u16) {
         self.status_word |= flag;
         if (self.control_word & flag) == 0 {
@@ -1903,13 +1832,11 @@ impl Fpu {
     }
 
     // =========================================================================
-    // JIT x87 save area sync (Stage 8: Inline FPU Codegen)
+    // x87 save-area conversion
     // =========================================================================
 
     /// Convert F80 registers + control/status/tag words to the 108-byte
     /// x87 state format used by FRSTOR/FNSAVE (32-bit protected mode layout).
-    ///
-    /// Called before JIT block execution when the block has FPU instructions.
     ///
     /// Layout (108 bytes, 32-bit protected-mode format):
     /// ```text
@@ -1929,13 +1856,8 @@ impl Fpu {
     ///                by the saved TOP in the status word.
     /// ```
     ///
-    /// Note: a previous version of this routine wrote the registers in
-    /// physical order (regs[0..8] verbatim). That happened to round-trip
-    /// correctly within a single JIT FRSTOR/FNSAVE pair (same wrong layout
-    /// on both ends) but desynchronised the interpreter's F80 view from the
-    /// hardware FPU whenever TOP ≠ 0. The visible symptom was unequal-
-    /// compare FCOMI/FUCOMI in JIT blocks producing the wrong CF/PF/ZF —
-    /// fuzz attempt-16 cluster C.
+    /// Registers must be saved in stack order, not physical order, or a
+    /// host round trip restores the wrong ST(i) values when TOP is nonzero.
     pub fn sync_to_x87_save_area(&mut self) {
         // EXP-A013: the save-area image reads every F80 register.
         self.commit_drc_binary64_register_file();
@@ -1981,13 +1903,9 @@ impl Fpu {
         }
     }
 
-    /// Convert 108-byte x87 state back to F80 registers + control/status/tag words.
-    ///
-    /// Called after JIT block execution to sync hardware x87 state back to
-    /// the interpreter's F80 (80-bit extended precision) representation.
-    /// Mirrors `sync_to_x87_save_area`: registers in the save area are in
-    /// stack order and must be unrotated by the saved TOP into the
-    /// physical-register layout used by `self.regs[]`.
+    /// Convert the 108-byte x87 image back to F80 registers and state words.
+    /// The image uses stack order, so unrotate by its saved TOP to recover
+    /// the physical-register layout in `self.regs[]`.
     pub fn sync_from_x87_save_area(&mut self) {
         let buf = self.x87_save_area;
 
@@ -2054,14 +1972,11 @@ impl Fpu {
     }
 }
 
-/// Metadata-only status folds used by the direct-host dyncore.
-///
-/// This is deliberately the only public capture-fold surface.  The variants
-/// select the interpreter's existing private helper, so generated code cannot
-/// grow a second copy of the x87 status or compare-flag expressions.
-#[doc(hidden)]
+/// Test adapter for isolated host x87 captures, sharing the interpreter's
+/// status and compare-flag helpers.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DyncoreStatusFold {
+enum DyncoreStatusFold {
     /// Arithmetic capture: merge exception bits 0..=5 and replace C1.
     KFull,
     /// FISTTP capture: K-full, then apply the interpreter's non-stack IE rule.
@@ -2091,8 +2006,8 @@ pub enum DyncoreStatusFold {
 /// The caller must pass the word captured for exactly one mnemonic after the
 /// direct-host `FNCLEX -> op -> FNSTSW` sequence.  This function is integer-only
 /// and does not inspect or mutate the software x87 register values.
-#[doc(hidden)]
-pub fn fold_dyncore_status_capture(cpu: &mut Cpu, fold: DyncoreStatusFold, sw: u16) {
+#[cfg(test)]
+fn fold_dyncore_status_capture(cpu: &mut Cpu, fold: DyncoreStatusFold, sw: u16) {
     match fold {
         DyncoreStatusFold::KFull => merge_x87_exception_status_and_c1(cpu, sw),
         DyncoreStatusFold::KFullIe => {
@@ -2117,8 +2032,8 @@ pub fn fold_dyncore_status_capture(cpu: &mut Cpu, fold: DyncoreStatusFold, sw: u
         DyncoreStatusFold::CompareEflags => {
             set_eflags_from_sw(cpu, sw);
             // FCOMI/FUCOMI zero OF, SF and AF (SDM "Flags Affected", confirmed
-            // on host silicon). This fold currently has no engine caller, but
-            // an engine that adopts it must not inherit the stale-flag bug.
+            // on host silicon). Keep this test adapter consistent with the
+            // interpreter's compare path.
             clear_comi_undefined_flags(cpu);
             if (sw & 1) != 0 {
                 cpu.fpu.set_exception(0x01);
@@ -2190,8 +2105,7 @@ mod tests {
         assert_eq!(drc.get_st(0), F80::ONE);
         assert_eq!(drc.exact_binary64_st(0), Some(1.0));
 
-        // The active bit consumes pre-existing NumericShadow tail padding;
-        // native-code Cpu/Fpu offsets must not move.
+        // The active bit uses NumericShadow tail padding, keeping Fpu compact.
         assert_eq!(std::mem::size_of::<Fpu>(), 368);
 
         drc.finish_external_restore();
@@ -2732,12 +2646,8 @@ mod tests {
         assert!(compared_div > 5_000, "too few accepted divide cases");
     }
 
-    /// MDD-BUG-FLUX-00141: `emms` empties every slot by assigning `tag_word`
-    /// wholesale, bypassing `set_tag`, so it must drop the numeric proofs
-    /// itself. Every drc native x87 leg reads a proof as "this slot is
-    /// architecturally readable"; a surviving proof makes the leg serve the op
-    /// from a stale shadow and pop where the helper would take the stack-fault
-    /// path.
+    /// MDD-BUG-FLUX-00141: `emms` assigns `tag_word` wholesale, bypassing
+    /// `set_tag`, so it must invalidate numeric proofs for the emptied slots.
     #[test]
     fn emms_drops_the_numeric_proofs_of_the_slots_it_empties() {
         let mut fpu = Fpu::new();
@@ -2992,8 +2902,8 @@ mod tests {
     /// residual of an exact sum is zero), but the pin stays.
     #[test]
     fn shadow_add_core_zero_operands_are_exact() {
-        // 0xFF7F_FFFF is the shrunk dyncore-differential seed operand
-        // (largest-magnitude negative finite f32, biased exponent 254).
+        // 0xFF7F_FFFF is the regression seed: the largest-magnitude negative
+        // finite f32, with biased exponent 254.
         let normals = [
             f32::MAX,
             -f32::MAX,
@@ -4240,11 +4150,8 @@ fn execute_inner<M: PagedMemory>(
             if operand_is_memory(instr, 0) && instr.memory_size_bytes() == 8 {
                 return execute_fstp_m64(cpu, instr, mem);
             }
-            // Stack-underflow handling (ST(0) empty) with IE masked: per Intel
-            // SDM Vol 1 §8.5.1.1, FP stores write the floating-point indefinite
-            // (QNaN) and pop. Real x87 — and the JIT via native FSTP — does
-            // this; the interpreter must mirror it to keep memory byte-identical.
-            // Same bug class as FIST/FISTP/FISTTP (commits 8e144f37a, e2f1d7d4e).
+            // Masked empty-stack stores write the floating-point indefinite QNaN
+            // and pop (Intel SDM Vol 1 §8.5.1.1), as do integer stores.
             if operand_is_memory(instr, 0) && stack_reg_empty(cpu, 0) {
                 // Write FP indefinite unconditionally. Intel
                 // SDM IM=0 semantics would raise #IA and not write, but our
@@ -4255,10 +4162,8 @@ fn execute_inner<M: PagedMemory>(
                 cpu.fpu.pop();
                 return Ok(());
             }
-            // Stack-underflow handling: FSTP ST(i) on empty ST(0) with IE
-            // masked writes FP indefinite to the destination register (tagged
-            // Special) and still pops. Matches JIT (native FSTP) + SDM
-            // §8.5.1.1. Patch 2 of the x87 fix plan HLD.
+            // FSTP ST(i) with empty ST(0) and masked IE writes the indefinite
+            // QNaN to the destination, tags it Special, and still pops (§8.5.1.1).
             if let Some(st_index) = stack_operand(instr, 0).filter(|_| stack_reg_empty(cpu, 0)) {
                 cpu.fpu.set_stack_fault(false);
                 let idx = cpu.fpu.get_st_idx(st_index);
@@ -4270,16 +4175,8 @@ fn execute_inner<M: PagedMemory>(
             let val = cpu.fpu.get_st(0);
             match instr.operand1 {
                 X87Operand::Stack(st_index) => {
-                    // FSTP ST(i) on non-empty source: copy ST(0) (with its tag)
-                    // to ST(i), then pop. Real x87 propagates tag word along
-                    // with the F80 bytes — without copying the tag we leave a
-                    // Valid value at a slot still tagged Empty, which makes
-                    // subsequent ST(i) reads see "stack underflow" on the JIT
-                    // side but valid data on the interp side. RM16 R1.α's
-                    // step-30 divergence (per `diag_jit_diff_rm16` paired-FPU
-                    // trace) was caused by this: `DF DF` (FSTP ST(7) alias)
-                    // copied the F80 value to phys 5 but left the tag Empty;
-                    // the JIT (running native FSTP-alias) tagged it Valid.
+                    // FSTP ST(i) copies both ST(0)'s bytes and tag before popping.
+                    // Copying only the bytes can leave a valid value tagged Empty.
                     let st_index = usize::from(st_index);
                     let src_phys = cpu.fpu.get_top();
                     let src_tag = cpu.fpu.get_tag(src_phys);
@@ -4333,11 +4230,8 @@ fn execute_inner<M: PagedMemory>(
             }
         }
         Mnemonic::Fst => {
-            // Stack-underflow handling (ST(0) empty) with IE masked: per Intel
-            // SDM Vol 1 §8.5.1.1, FP stores write the floating-point indefinite
-            // (QNaN). Real x87 — and the JIT via native FST — does this; the
-            // interpreter must mirror it to keep memory byte-identical. FST has
-            // no 80-bit memory form (that is FSTP-only).
+            // Masked empty-stack FST stores write the indefinite QNaN (§8.5.1.1).
+            // FST has no 80-bit memory form; that form belongs to FSTP.
             if operand_is_memory(instr, 0) && stack_reg_empty(cpu, 0) {
                 // Write FP indefinite unconditionally. Intel
                 // SDM IM=0 semantics would raise #IA and not write, but our
@@ -4347,13 +4241,8 @@ fn execute_inner<M: PagedMemory>(
                 cpu.fpu.set_stack_fault(false);
                 return Ok(());
             }
-            // Stack-underflow handling when the destination is a register and
-            // ST(0) is empty: per Intel SDM Vol 1 §8.5.1.1, FST ST(i) on an
-            // empty ST(0) with IE masked writes the floating-point indefinite
-            // (QNaN) to the destination slot and tags it Special. Real x87
-            // (and the JIT via native FST) does this; the interpreter must
-            // mirror it or subsequent FLD/FST chains diverge. Patch 2 of
-            // `wrk_docs/2026.04.23 - HLD - JIT x87 fix plan.md`.
+            // FST ST(i) with empty ST(0) and masked IE writes the indefinite
+            // QNaN to the destination and tags it Special (SDM Vol 1 §8.5.1.1).
             if let Some(st_index) = stack_operand(instr, 0).filter(|_| stack_reg_empty(cpu, 0)) {
                 cpu.fpu.set_stack_fault(false);
                 let idx = cpu.fpu.get_st_idx(st_index);
@@ -4364,10 +4253,8 @@ fn execute_inner<M: PagedMemory>(
             let val = cpu.fpu.get_st(0);
             match instr.operand1 {
                 X87Operand::Stack(st_index) => {
-                    // FST ST(i) on non-empty source: copy ST(0) (with its
-                    // tag) to ST(i). Same fix shape as FSTP — propagate the
-                    // tag word along with the F80 bytes so subsequent ST(i)
-                    // reads agree with the JIT (native FST).
+                    // FST ST(i) copies both the F80 bytes and tag, as FSTP does, so
+                    // later reads see the correct occupancy.
                     let st_index = usize::from(st_index);
                     let src_phys = cpu.fpu.get_top();
                     let src_tag = cpu.fpu.get_tag(src_phys);
@@ -4473,16 +4360,9 @@ fn execute_inner<M: PagedMemory>(
         }
         Mnemonic::Fisttp => {
             if stack_reg_empty(cpu, 0) {
-                // Per Intel SDM Vol 1 §8.5.1.1 — same masked-IE indefinite-write
-                // rule as FIST/FISTP (see commit 8e144f37a). The JIT emits native
-                // FISTTP which performs the indefinite store; the interpreter must
-                // mirror that, otherwise memory stays stale and a subsequent read
-                // diverges from JIT.
-                //
-                // Write FP indefinite unconditionally. Intel
-                // SDM IM=0 semantics would raise #IA and not write, but our
-                // emulator does not dispatch FPU exceptions — status-word-only.
-                // See HLD 02 §5.2.
+                // Masked empty-stack FISTTP writes the integer indefinite value
+                // (Intel SDM Vol 1 §8.5.1.1). Write even when IM=0: this emulator
+                // records exception status but does not dispatch FPU exceptions.
                 match instr.memory_size_bytes() {
                     2 => write_i16(cpu, instr, mem, i16::MIN)?,
                     4 => write_i32(cpu, instr, mem, i32::MIN)?,
@@ -4490,9 +4370,7 @@ fn execute_inner<M: PagedMemory>(
                     _ => {}
                 }
                 cpu.fpu.set_stack_fault(false);
-                // FISTTP (Truncate+Pop) must still pop on masked IE. The JIT's
-                // native FISTTP advances TOP; the interpreter must match.
-                // Patch 4 of the x87 fix plan HLD.
+                // FISTTP still pops on masked IE, advancing TOP for later instructions.
                 cpu.fpu.pop();
                 return Ok(());
             }
@@ -4539,17 +4417,9 @@ fn execute_inner<M: PagedMemory>(
                 return execute_fistp_m32(cpu, instr, mem);
             }
             if stack_reg_empty(cpu, 0) {
-                // Per Intel SDM Vol 1 §8.5.1.1: with the IE (Invalid Operation)
-                // exception masked, FIST/FISTP store the integer indefinite value
-                // (0x8000.../highest bit set). The default control word (0x037F)
-                // masks all exceptions, so most code observes this behavior. Real
-                // x87 (and the JIT, which emits a native FISTP) does this write;
-                // skipping it caused interpreter/JIT divergence on stack underflow.
-                //
-                // Write FP indefinite unconditionally. Intel
-                // SDM IM=0 semantics would raise #IA and not write, but our
-                // emulator does not dispatch FPU exceptions — status-word-only.
-                // See HLD 02 §5.2.
+                // With masked IE, FIST/FISTP store the integer indefinite value
+                // (highest bit set; SDM Vol 1 §8.5.1.1). Write even when IM=0:
+                // this emulator records status but does not dispatch FPU exceptions.
                 match instr.memory_size_bytes() {
                     2 => write_i16(cpu, instr, mem, i16::MIN)?,
                     4 => write_i32(cpu, instr, mem, i32::MIN)?,
@@ -4557,10 +4427,7 @@ fn execute_inner<M: PagedMemory>(
                     _ => {}
                 }
                 cpu.fpu.set_stack_fault(false);
-                // FISTP must still pop (even on masked IE). The JIT's native
-                // FISTP advances TOP; the interpreter must match or TOP drifts
-                // for subsequent FPU instructions. Patch 4 of the x87 fix
-                // plan HLD.
+                // FISTP still pops on masked IE, advancing TOP for later instructions.
                 if instr.mnemonic() == Mnemonic::Fistp {
                     cpu.fpu.pop();
                 }
@@ -4661,11 +4528,8 @@ fn execute_inner<M: PagedMemory>(
             let val_b = read_int_operand_f80(cpu, instr, mem)?;
             if stack_reg_empty(cpu, 0) {
                 cpu.fpu.set_stack_fault(false);
-                // Per Intel SDM Vol 1 §8.3.6.2: masked invalid compare sets
-                // C0=C2=C3=1 (unordered). Real x87 (and the JIT via native
-                // FICOM) does this; the previous early-return left condition
-                // codes stale so FNSTSW diverged from the JIT.
-                // Patch 3 of the x87 fix plan HLD. Fuzz Repro C.
+                // Masked invalid FICOM sets C0=C2=C3=1 (unordered), rather than
+                // leaving stale condition codes (SDM Vol 1 §8.3.6.2).
                 cpu.fpu.set_condition_codes(true, false, true, true);
                 if instr.mnemonic() == Mnemonic::Ficomp {
                     cpu.fpu.pop();
@@ -4690,12 +4554,8 @@ fn execute_inner<M: PagedMemory>(
                 .unwrap_or(1);
             if stack_reg_empty(cpu, 0) || stack_reg_empty(cpu, st_i) {
                 cpu.fpu.set_stack_fault(false);
-                // Masked invalid compare: C0=C2=C3=1 (unordered). FUCOMP/
-                // FUCOMPP still pop per SDM §8.5.1.1. Real x87 (and the JIT
-                // via native FUCOMP) does this; the previous early-return
-                // skipped both the CC update and the pop, causing FNSTSW
-                // to diverge from the JIT on subsequent stores.
-                // Patch 3 of the x87 fix plan HLD. Fuzz Repro B.
+                // Masked invalid FUCOMP/FUCOMPP sets unordered condition codes
+                // (C0=C2=C3=1) and still pops (SDM Vol 1 §8.5.1.1).
                 cpu.fpu.set_condition_codes(true, false, true, true);
                 if instr.mnemonic() == Mnemonic::Fucomp || instr.mnemonic() == Mnemonic::Fucompp {
                     cpu.fpu.pop();
@@ -4790,10 +4650,8 @@ fn execute_inner<M: PagedMemory>(
                 .unwrap_or(1);
             if stack_reg_empty(cpu, 0) || stack_reg_empty(cpu, st_i_val) {
                 cpu.fpu.set_stack_fault(false);
-                // Per Intel SDM: with masked IE, FCOMI/FUCOMI set EFLAGS to
-                // "unordered" (ZF=PF=CF=1). Real x87 and the JIT (native FCOMI)
-                // do this; returning early without setting EFLAGS caused divergence.
-                // Status word C3=C2=C0=1 → bits 14,10,8 → 0x4500.
+                // Masked invalid FCOMI/FUCOMI sets unordered EFLAGS (ZF=PF=CF=1).
+                // Status bits C3=C2=C0=1 correspond to 0x4500.
                 set_eflags_from_sw(cpu, 0x4500);
                 clear_comi_undefined_flags(cpu);
                 if matches!(instr.mnemonic(), Mnemonic::Fcomip | Mnemonic::Fucomip) {
@@ -4850,18 +4708,10 @@ fn execute_inner<M: PagedMemory>(
                 Mnemonic::Fcmovu => pf,
                 _ => false,
             };
-            // Per Intel SDM "FCMOVcc": #IS (stack underflow) is raised
-            // whenever ST(0) or the source ST(i) is empty, INDEPENDENT of
-            // whether the move is taken. With masked IE (the JIT prologue
-            // forces all exceptions masked), the empty-source path sets
-            // SF in the status word and writes the F80 indefinite (QNaN)
-            // into ST(0). Cluster G of the attempt-17 fuzz campaign caught
-            // the conditional gating below — earlier we only set the stack
-            // fault when `should_move == true`, but native FCMOVcc sets
-            // IE+SF and writes the indefinite even when the condition is
-            // FALSE, as long as the inspected register is empty. Verified
-            // against host x87 hardware in
-            // `tests/jit_fpu_empty_stack_probe.rs`.
+            // FCMOVcc raises stack underflow if either inspected register is
+            // empty, regardless of whether the condition selects the move.
+            // With masked IE, set SF and write the indefinite QNaN to ST(0),
+            // even when the condition is false (Intel SDM, FCMOVcc).
             if stack_reg_empty(cpu, 0) || stack_reg_empty(cpu, st_i) {
                 cpu.fpu.set_stack_fault(false);
                 let top = cpu.fpu.get_top();
@@ -4902,11 +4752,8 @@ fn execute_inner<M: PagedMemory>(
                 )?;
             }
         }
-        // Unary operations on ST(0). Patch 4 of the x87 fix plan HLD: on
-        // masked-IE stack underflow (empty ST(0)) real x87 writes the FP
-        // indefinite into ST(0) and tags it Special. The JIT via native
-        // FCHS/FABS/FSIN/FCOS/FSQRT/FRNDINT/F2XM1/FSCALE does this; the
-        // interpreter must mirror it. See SDM Vol 1 §8.5.1.1.
+        // Unary ST(0) operations on an empty stack with masked IE write
+        // the indefinite QNaN and tag it Special (SDM Vol 1 §8.5.1.1).
         Mnemonic::Fchs => {
             if stack_reg_empty(cpu, 0) {
                 cpu.fpu.set_stack_fault(false);
@@ -4995,9 +4842,8 @@ fn execute_inner<M: PagedMemory>(
                 write_indefinite_to_st(cpu, 0);
                 return Ok(());
             }
-            // dynrec-drc binary64 contract: single-rounded host-double sqrt
-            // on a proven-exact operand (refusals fall through to the pure
-            // 80-bit path below, which owns IE/DE).
+            // In binary64 mode, use a single-rounded host-double sqrt for a
+            // proven-exact operand. Refusals use the 80-bit path, which owns IE/DE.
             if try_numeric_shadow_sqrt(cpu) {
                 return Ok(());
             }
@@ -5017,19 +4863,10 @@ fn execute_inner<M: PagedMemory>(
             merge_x87_exception_status_and_c1(cpu, sw);
         }
         Mnemonic::Fptan => {
-            // Partial tangent: ST(0) = tan(ST(0)), push 1.0
-            // Patch 4: empty ST(0) with IE masked → write FP indefinite to
-            // ST(0) and push the FP indefinite (NOT 1.0). Verified against
-            // host x87 hardware (see `tests/jit_fpu_empty_stack_probe.rs`):
-            // FPTAN with empty stack and masked IE advances TOP and writes
-            // the F80 indefinite to BOTH the source slot (old ST(0), which
-            // becomes the new ST(1)) and the destination slot (new ST(0)).
-            // A subsequent FSTP m64fp from the new ST(0) stores
-            // 0xFFF8000000000000 (the IEEE-754 64-bit indefinite QNaN).
-            // Cluster G of the attempt-17 fuzz campaign caught this — the
-            // earlier "match the JIT by pushing 1.0" model was wrong: the
-            // JIT runs native FPTAN which pushes the indefinite, not 1.0.
-            // SDM Vol 1 §8.5.1.1, §4.8.3.7.
+            // FPTAN replaces ST(0) with tan(ST(0)) and pushes 1.0.
+            // With empty ST(0) and masked IE, it instead writes the indefinite
+            // QNaN to both the source and newly pushed slots. A following FSTP
+            // m64 stores 0xFFF8000000000000 (SDM Vol 1 §8.5.1.1, §4.8.3.7).
             if stack_reg_empty(cpu, 0) {
                 cpu.fpu.set_stack_fault(false);
                 write_indefinite_to_st(cpu, 0);
@@ -5042,16 +4879,10 @@ fn execute_inner<M: PagedMemory>(
                 cpu.fpu.status_word &= !(1 << 10);
                 return Ok(());
             }
-            // Push-overflow with IM=1 (the default): per Intel SDM Vol 1
-            // §8.5.1.2 and host probe `tmp/probe_fptan_overflow.rs`,
-            // hardware overwrites BOTH the source slot AND the new TOP slot
-            // with the F80 indefinite QNaN, tagging both Special and setting
-            // C1=SF=IE=1. `Fpu::push` handles the would-overflow slot
-            // correctly (advances TOP, writes indefinite, tags Special,
-            // sets stack-fault overflow flavour); we additionally overwrite
-            // the source. Closes a latent FBLD-shaped bug in the same
-            // family — see HLD `wrk_docs/2026.05.10 - HLD - JIT vs interp
-            // R1 gamma residual FBLD-FBSTP BCD indefinite EFLAGS divergence.md`.
+            // On push overflow with IM=1, FPTAN writes the indefinite QNaN to
+            // both source and new TOP slots, tags them Special, and sets
+            // C1=SF=IE=1 (SDM Vol 1 §8.5.1.2). `Fpu::push` handles the new TOP;
+            // overwrite the source separately.
             if !cpu.fpu.is_empty((cpu.fpu.get_top().wrapping_sub(1)) & 0x7) {
                 write_indefinite_to_st(cpu, 0);
                 cpu.fpu.push(F80::INDEFINITE);
@@ -5060,15 +4891,9 @@ fn execute_inner<M: PagedMemory>(
             }
             let top = cpu.fpu.get_top();
             let angle = cpu.fpu.regs[top];
-            // Pre-check: NaN and infinity inputs are invalid for FPTAN.
-            // Verified against host x87 (`tmp/probe_fptan_nan.rs`): on a
-            // QNaN input the native FPTAN sets IE, writes indefinite into
-            // the source slot AND pushes indefinite onto the new top — it
-            // does NOT push 1.0. RM16 R1.δ artifact `crash-eb2e73b6`
-            // exposed the earlier "push 1.0" model: a subsequent FSTP m32
-            // from the new ST(0) stored +1.0f in interp vs single-prec
-            // QNaN in the JIT. Same shape as the empty-stack case.
-            // Intel SDM §8.5.1.1 + §3.3.10 (FPTAN).
+            // NaN and infinity are invalid FPTAN inputs. Write the indefinite
+            // to the source and push another indefinite, not 1.0, as on empty
+            // stack (Intel SDM, FPTAN).
             if angle.is_nan() || angle.is_infinite() {
                 cpu.fpu.set_exception(0x01); // IE flag
                 write_indefinite_to_st(cpu, 0);
@@ -5107,9 +4932,8 @@ fn execute_inner<M: PagedMemory>(
                 .set_st(0, x87_ops::f80_patan(&y, &x, cpu.fpu.control_word));
         }
         Mnemonic::Fsincos => {
-            // Sine and cosine: ST(0) = sin, push cos
-            // Patch 4: empty ST(0) → write indefinite to ST(0), push
-            // indefinite. Matches JIT native FSINCOS on masked IE.
+            // FSINCOS computes sine in ST(0) and pushes cosine. With empty
+            // ST(0) and masked IE, write and push the indefinite instead.
             if stack_reg_empty(cpu, 0) {
                 cpu.fpu.set_stack_fault(false);
                 write_indefinite_to_st(cpu, 0);
@@ -5245,11 +5069,9 @@ fn execute_inner<M: PagedMemory>(
             cpu.fpu.set_physical_reg(top, result);
         }
         Mnemonic::Fxtract => {
-            // Extract exponent and significand
-            // Patch 4: empty ST(0) → write indefinite to ST(0) (the old
-            // value becomes indefinite in the "exponent" slot), then push
-            // indefinite for the "significand". Matches JIT FXTRACT on
-            // masked IE.
+            // FXTRACT extracts exponent and significand. With empty ST(0)
+            // and masked IE, write the indefinite to the exponent slot and
+            // push another indefinite for the significand.
             if stack_reg_empty(cpu, 0) {
                 cpu.fpu.set_stack_fault(false);
                 write_indefinite_to_st(cpu, 0);
@@ -5565,20 +5387,10 @@ fn execute_inner<M: PagedMemory>(
 
         // BCD Operations (packed decimal)
         Mnemonic::Fbld => {
-            // Load 18-digit packed BCD (10 bytes) to ST(0).
-            //
-            // Per Intel SDM Vol 1 §8.5.1.2 (Stack Overflow #IS): when the
-            // destination slot is non-empty and IM=1 (default CW 0x037F),
-            // hardware advances TOP, writes the FP indefinite QNaN to the
-            // destination, tags it Special, and sets C1=SF=IE=1. The JIT
-            // emits the native FBLD opcode (after FRSTOR), so it inherits
-            // this behaviour exactly. `Fpu::push` already implements the
-            // correct overflow path; mirror the FILD pattern (read the
-            // operand unconditionally, then push) so push() handles overflow
-            // uniformly. Closes RM16 R1.γ residual `crash-7ed7dd58…` —
-            // see HLD `wrk_docs/2026.05.10 - HLD - JIT vs interp R1
-            // gamma residual FBLD-FBSTP BCD indefinite EFLAGS divergence.md`.
-            // Host probe: `tmp/probe_fbld_overflow.rs`.
+            // Load 18-digit packed BCD into ST(0). On masked stack overflow,
+            // advance TOP, write the indefinite QNaN, tag Special and set
+            // C1=SF=IE=1 (SDM Vol 1 §8.5.1.2). Read the operand unconditionally
+            // and let `Fpu::push` handle overflow, as for FILD.
             let mut bytes = [0u8; 10];
             crate::addressing::read_x87_operand_bytes(
                 cpu,
@@ -5589,14 +5401,9 @@ fn execute_inner<M: PagedMemory>(
             cpu.fpu.push(F80::from_bcd(&bytes));
         }
         Mnemonic::Fbstp => {
-            // Store ST(0) as 18-digit packed BCD (10 bytes) and pop.
-            //
-            // Stack-underflow (ST(0) empty) with IE masked: per Intel SDM Vol 1
-            // §8.5.1.1 and §4.8.3.7, FBSTP writes the 10-byte BCD indefinite
-            // (same bit pattern as the 80-bit FP indefinite:
-            // [0,0,0,0,0,0,0,0xC0,0xFF,0xFF] little-endian). Real x87 — and the
-            // JIT via native FBSTP — does this; the interpreter must mirror it
-            // for memory parity. Same class as FIST/FISTP/FISTTP.
+            // Store ST(0) as 18-digit packed BCD and pop. On masked empty-stack
+            // underflow, store the 10-byte BCD indefinite: little-endian
+            // [0,0,0,0,0,0,0,0xC0,0xFF,0xFF] (SDM Vol 1 §8.5.1.1, §4.8.3.7).
             if stack_reg_empty(cpu, 0) {
                 // Write FP indefinite unconditionally. Intel
                 // SDM IM=0 semantics would raise #IA and not write, but our
@@ -5610,9 +5417,7 @@ fn execute_inner<M: PagedMemory>(
                     &indef,
                 )?;
                 cpu.fpu.set_stack_fault(false);
-                // FBSTP must still pop on masked IE. The JIT's native FBSTP
-                // advances TOP; the interpreter must match. Patch 4 of the
-                // x87 fix plan HLD.
+                // FBSTP still advances TOP on masked IE.
                 cpu.fpu.pop();
                 return Ok(());
             }
@@ -5909,10 +5714,8 @@ fn execute_fstp_m64<M: PagedMemory>(
     cpu.fpu.commit_drc_binary64_st(0);
     let val = cpu.fpu.get_st(0);
     x87_form_census::note_fstp_wide(8);
-    // The portable DRC's native FSTP m64 contract leaves C1 untouched for an
-    // exact binary64 store. On x86-64 this form uses the checked helper, so
-    // preserve the same status behavior as the AArch64 native emitter. The
-    // interpreter still reports the silicon narrowing status below.
+    // Binary64 mode preserves C1 for an exact binary64 store.
+    // The normal interpreter path reports the narrowing status below.
     let drc_exact_store =
         cpu.fpu.drc_binary64_mode_active() && cpu.fpu.exact_binary64_st(0).is_some();
     let (f64_val, sw) = narrow_st0_to_f64(cpu, val);
@@ -5954,7 +5757,7 @@ fn execute_fstp_m64<M: PagedMemory>(
 /// first (`may_use_shadow_fast_path` is false for them); arith forms do
 /// NOT sync (exactly the wrapper's rule); every admitted form is
 /// EFLAGS-neutral, memory-free, infallible, IP-neutral, and pre-P6; all
-/// end with the drc binary64 commit (the wrapper's helper-boundary rule).
+/// end with the binary64 commit barrier, matching the wrapper.
 /// While the ops trace is armed (EMU_PROBES/test builds only — const-false
 /// in production) the lane declines everything so trace fidelity is kept.
 /// Pinned by the exhaustive 512-pair two-route sweep
@@ -6310,12 +6113,8 @@ fn execute_fxch(cpu: &mut Cpu, i: usize) -> anyhow::Result<()> {
     let top = cpu.fpu.get_top();
     let idx_i = (top + i) & 0x7;
     if empty0 || emptyi {
-        // Patch 4: per Intel SDM Vol 2 FXCH, with IE masked, the
-        // exchange is performed and the empty register is loaded
-        // with the FP indefinite (QNaN). Real x87 (and the JIT via
-        // native FXCH) does this; the interpreter previously
-        // returned early, leaving both registers stale and TOP
-        // drifting vs the JIT.
+        // On masked stack underflow, FXCH still exchanges the registers,
+        // filling the empty register with the indefinite QNaN (Intel SDM, FXCH).
         cpu.fpu.set_stack_fault(false);
         if empty0 {
             cpu.fpu.set_physical_reg(top, F80::INDEFINITE);
@@ -6677,15 +6476,10 @@ fn narrow_st0_to_f64(cpu: &Cpu, value: F80) -> (f64, u16) {
         .unwrap_or_else(|| value.to_f64_status_with_cw(cpu.fpu.control_word))
 }
 
-/// Merge an operation's exception flags (`sw` bits 0-5) into the status word,
-/// setting ES when any of them is unmasked, and replace C1 with `sw`'s C1.
-///
-/// The same as calling [`Fpu::set_exception`] once per set flag, written
-/// without a loop: a loop here let PGO choose between a rolled form (~100
-/// host instructions per call) and an unrolled one (~19) on noise-level
-/// training counts, which split same-SHA DRC builds into two h/g modes on
-/// `merge_x87_exception_status_and_c1_matches_per_flag_set_exception` pins
-/// the equivalence exhaustively.
+/// Merge exception flags (bits 0-5), set ES for unmasked exceptions,
+/// and replace C1. Equivalent to per-flag [`Fpu::set_exception`] calls.
+/// Unrolled to keep PGO from choosing an expensive loop on sparse counts;
+/// the exhaustive equivalence test pins its behavior.
 fn merge_x87_exception_status_and_c1(cpu: &mut Cpu, sw: u16) {
     const EXCEPTIONS: u16 = 0x003F;
     const C1: u16 = 1 << 9;
@@ -6695,19 +6489,9 @@ fn merge_x87_exception_status_and_c1(cpu: &mut Cpu, sw: u16) {
     cpu.fpu.status_word = ((cpu.fpu.status_word | raised | es) & !C1) | (sw & C1);
 }
 
-/// Set EFLAGS (CF, ZF, PF) from x87 status word bits returned by `f80_compare`.
-/// Maps C0 (bit 8) -> CF, C2 (bit 10) -> PF, C3 (bit 14) -> ZF.
-///
-/// This maps the CONDITION CODES only; callers clear OF/SF/AF separately via
-/// `clear_comi_undefined_flags`, which every FCOMI-family caller must do.
-///
-/// An earlier revision of this comment justified NOT folding the clear in here
-/// by saying the other caller — the `DyncoreStatusFold::CompareEflags` arm —
-/// had EFLAGS handling "belonging to the native engines' own contract". That
-/// was wrong twice over: the fold has no callers outside this crate's tests,
-/// so there is no engine contract to defer to, and leaving it uncorrected
-/// would have left dead code carrying the exact bug the compare arm just
-/// fixed, waiting for whoever adopts it. Both call sites now clear the three.
+/// Set CF/ZF/PF from the x87 status returned by `f80_compare`:
+/// C0 (bit 8) -> CF, C2 (bit 10) -> PF, C3 (bit 14) -> ZF.
+/// Callers must separately clear OF/SF/AF via `clear_comi_undefined_flags`.
 fn set_eflags_from_sw(cpu: &mut Cpu, sw: u16) {
     let mut flags = cpu.regs.flags;
     flags.remove(Flags::CARRY | Flags::ZERO | Flags::PARITY);
@@ -6742,14 +6526,9 @@ fn stack_reg_empty(cpu: &Cpu, st_i: usize) -> bool {
     cpu.fpu.is_empty(cpu.fpu.get_st_idx(st_i))
 }
 
-/// Write the FP indefinite (QNaN) into ST(i) and tag it as Special.
-///
-/// Used by Patch 4 of the x87 fix plan HLD: when an FPU operation faults
-/// with IE masked (stack underflow), real x87 (and the JIT via native x87
-/// through FRSTOR/FNSAVE) writes the floating-point indefinite into the
-/// destination ST(i). The interpreter must mirror this so subsequent reads
-/// of that slot match the JIT. Tag=Special (2) because the indefinite is a
-/// QNaN, not Valid/Zero. See Intel SDM Vol 1 §8.5.1.1 and §4.8.3.7.
+/// Write the indefinite QNaN to ST(i) and tag it Special. Masked
+/// stack-underflow paths use this result, rather than Valid or Zero
+/// (Intel SDM Vol 1 §8.5.1.1, §4.8.3.7).
 fn write_indefinite_to_st(cpu: &mut Cpu, st_i: usize) {
     let idx = cpu.fpu.get_st_idx(st_i);
     cpu.fpu.set_physical_reg(idx, F80::INDEFINITE);
@@ -6790,15 +6569,6 @@ fn apply_fist_conversion_status(cpu: &mut Cpu, sw: u16) {
 /// FIST/FISTP/FISTTP convert from a NaN/infinity input, or an arithmetic
 /// op on an SNaN — C1 must be **cleared** so it does not retain a stale
 /// value from a prior overflow operation.
-///
-/// This was surfaced by RM16 R1.γ residual `crash-7ed7dd58…`: after the
-/// FBLD push-overflow fix landed (commit `c09266c09`), one byte of
-/// divergence remained at the high byte of an FNSTSW snapshot. Bit
-/// decode showed C1=1 in interp / C1=0 in JIT after a `FISTTP qword
-/// [bx+si]` of an F80 indefinite QNaN whose C1 had been set by an
-/// upstream FBLD overflow. Host probe `tmp/probe_fisttp_qnan.rs`
-/// confirmed the host clears C1 on this path; the previous interp code
-/// only set IE.
 ///
 /// `set_stack_fault` is the right helper for stack-related #IS — it sets
 /// IE+SF and assigns C1 explicitly. This helper is the analogue for
@@ -6888,15 +6658,11 @@ fn try_numeric_shadow_arith(
     true
 }
 
-/// FSQRT under the dynrec-drc binary64 contract: when the portable DRC owns
-/// the register file, sqrt — like the basic four in
-/// [`try_numeric_shadow_arith`] — stays binary64 (the binary64 register
-/// file computes it as a host-double op), so a proven-exact ST(0) takes the
-/// single-rounded host path instead of the 80-bit soft path (whose result the
-/// binary64 commit barrier would double-round). Deliberately NOT gated on PC:
-/// the mode forces double, exactly like the arith twin. Refusals (interpreter
-/// engine, unproven operand, negative/denormal/NaN/Inf/sub-floor) fall back
-/// to the pure path, which owns IE/DE.
+/// FSQRT in binary64 mode uses a single-rounded host-double result for
+/// proven-exact ST(0), avoiding a second rounding through an 80-bit result.
+/// Like [`try_numeric_shadow_arith`], this mode ignores PC. Normal F80
+/// mode and unproven, negative, denormal, NaN, infinite or sub-floor
+/// operands use the pure path, which owns IE/DE.
 fn try_numeric_shadow_sqrt(cpu: &mut Cpu) -> bool {
     if !cpu.fpu.drc_binary64_mode_active() {
         return false;
@@ -7030,15 +6796,9 @@ fn execute_arith_memory<M: PagedMemory>(
     // Read first: a source #GP/#PF must leave status, tags, TOP and registers
     // byte-identical for restart. Fixes MDD-BUG-CRUCIBLE-00255.
     let m_val = read_float_operand_f80(cpu, instr, mem)?;
-    // Stack-underflow (ST(0) empty) with IE masked: per Intel SDM Vol 1
-    // §8.5.1.1, FP arithmetic on an empty stack writes the FP
-    // indefinite (QNaN) to the destination ST(0). Real x87 (and the
-    // JIT via FRSTOR + native FADD/FSUB/FMUL/FDIV/FDIVR) does this;
-    // the interpreter previously returned early leaving ST(0) stale.
-    // Patch 4 of the x87 fix plan HLD.
-    //
-    // Still consume the memory operand read to mirror the memory
-    // access pattern (the host FPU fetches it before raising SI).
+    // Masked empty-stack arithmetic writes the indefinite QNaN to ST(0)
+    // (SDM Vol 1 §8.5.1.1). Still read the memory operand to preserve its
+    // access side effects before reporting the stack fault.
     if stack_reg_empty(cpu, 0) {
         cpu.fpu.set_stack_fault(false);
         // SDM §8.5.1.1: C0/C2/C3 are "undefined" on masked-#IS arith
@@ -7095,12 +6855,9 @@ fn execute_arith_register(
 ) -> anyhow::Result<()> {
     let cw = cpu.fpu.control_word;
     x87_form_census::note_arith_reg(cw);
-    // Stack-underflow (either ST(i) or ST(j) empty) with IE masked:
-    // per Intel SDM Vol 1 §8.5.1.1, FP arithmetic writes FP indefinite
-    // to the destination ST(i); pop-variants (FADDP/FSUBP/FMULP/
-    // FDIVP/...) still pop. Real x87 (and the JIT via native FADDP
-    // etc.) does this; the interpreter previously skipped both the
-    // indefinite write and the pop. Patch 4 of the x87 fix plan HLD.
+    // With either source empty and IE masked, arithmetic writes the
+    // indefinite to the destination; pop variants still pop
+    // (Intel SDM Vol 1 §8.5.1.1).
     if stack_reg_empty(cpu, st_i) || stack_reg_empty(cpu, st_j) {
         cpu.fpu.set_stack_fault(false);
         // SDM §8.5.1.1: C0/C2/C3 are "undefined" on masked-#IS arith
@@ -7663,16 +7420,9 @@ pub fn compare_fpu_state(a: &Fpu, b: &Fpu) -> Vec<String> {
 /// The check syncs the interpreter's `Fpu` to a 108-byte FNSAVE/FRSTOR
 /// layout, hands that buffer to the host CPU via `frstor` + `fnsave`, and
 /// asserts architectural equality with the original under the narrow exclusions
-/// below. A round-trip divergence
-/// proves the interpreter is encoding an FPU state that real x87 cannot
-/// represent — which by transitivity means the JIT (which runs native
-/// x87 between FRSTOR/FNSAVE bookends) may diverge from the interpreter at the
-/// next save-area exchange.
+/// below. A divergence indicates state that real x87 cannot represent.
 ///
-/// Phase 1 instrumentation for the RM16 R1 α/β/γ/δ HLD
-/// (`wrk_docs/2026.05.08 - HLD - JIT vs interp x87 indefinite-result
-/// parity...`). The HLD pseudocode skipped only the status-word bytes;
-/// after empirical confirmation we also need to skip the reserved upper
+/// The comparison skips the status-word bytes and reserved upper
 /// halves of the 16-bit CW/SW/TW/operand-selector fields (Intel SDM Vol 1
 /// §8.1.10 Table 8-2 lists these as "reserved" in the 32-bit save image,
 /// and real x87 hardware FNSAVE writes 0xFFFF there while
@@ -8259,12 +8009,10 @@ mod tests_execute {
         }
     }
 
-    /// `x ± 0` under PC=single/RC=nearest is exact, but
-    /// the binary32 shadow's exponent-gap shortcut fabricated PE (and C1 when
-    /// the operand signs differed) whenever a zero operand met a normal
-    /// operand with biased exponent >= 30. Real x87 (the dyncore's emitter and
-    /// a standalone host probe) keeps PE and C1 clear. Curated interpreter
-    /// rows: memory (m32 and m64) and register forms, zero in either slot.
+    /// `x ± 0` under PC=single/RC=nearest is exact. The shadow's exponent-gap
+    /// shortcut fabricated PE (and sometimes C1) for zero paired with a
+    /// normal operand of biased exponent >= 30. Host x87 keeps both clear;
+    /// cover memory and register forms with zero in either slot.
     #[test]
     fn zero_operand_shadow_arith_keeps_pe_and_c1_clear() {
         let addr = 0x2000usize;
@@ -8296,10 +8044,9 @@ mod tests_execute {
             );
         }
 
-        // The exact shrunk failing shape from the dyncore differential
-        // (oracle1b, seed 7a37172c…): CW=0x0040 (PC=single, RC=nearest),
-        // FLDZ; FSUBR m32 with m32 = 0xFF7F_FFFF (-f32::MAX). Observed
-        // divergence was SW xor 0x0020 — PE only, C1 correctly clear.
+        // Regression seed 7a37172c: CW=0x0040 (PC=single, RC=nearest),
+        // FLDZ; FSUBR m32 with -f32::MAX. The incorrect status differed
+        // by PE (0x0020) alone; C1 was correctly clear.
         {
             let mut cpu = Cpu::new();
             let mut mem = Memory::new();
@@ -10416,10 +10163,8 @@ mod tests_execute {
         cpu.fpu.status_word = 0;
         let top_before = cpu.fpu.get_top();
         exec_instr(&mut cpu, &mut mem, instr0(Code::Fptan));
-        // Per Intel SDM Vol 1 §8.5.1.2 and host probe
-        // `tmp/probe_fptan_overflow.rs`: push-overflow with IM=1 advances
-        // TOP (decrement). The previous "top unchanged" assertion locked
-        // in a JIT-divergent behaviour fixed by HLD 2026.05.10.
+        // Per Intel SDM Vol 1 §8.5.1.2, push overflow with IM=1 still
+        // decrements TOP.
         assert_eq!(cpu.fpu.get_top(), (top_before + 7) & 0x7);
         assert_ne!(cpu.fpu.status_word & 0x01, 0); // IE
         assert_ne!(cpu.fpu.status_word & 0x40, 0); // SF
@@ -11508,22 +11253,17 @@ mod tests_execute {
             &mut mem,
             Instruction::with1(Code::Fisttp_m16int, mem_op(addr as i64)).unwrap(),
         );
-        // With default (masked) IE, FISTTP from empty stack writes the
-        // integer indefinite value (0x8000 for 16-bit) to memory, matching
-        // real x87 semantics and the JIT (see FIST/FISTP/FBSTP).
+        // With masked IE, empty-stack FISTTP writes the integer indefinite
+        // (0x8000 for 16-bit), as FIST/FISTP/FBSTP do.
         assert_eq!(mem.read_u16(addr), i16::MIN as u16);
         assert_stack_fault(&cpu);
     }
 
     #[test]
     fn fstp_empty_stack_writes_indefinite_even_with_im_unmasked() {
-        // Regression for HLD 02 Task C1 — the interpreter used to gate the
-        // empty-stack indefinite write on `cpu.fpu.control_word & 0x01 != 0`
-        // (i.e. IM=1 / invalid-op masked). With IM=0 the guest SDM says the
-        // CPU would raise #IA and not write, but our emulator does not
-        // dispatch FPU exceptions and the JIT (with the host FPU force-masked
-        // for safety) always writes. Unconditional write keeps memory
-        // byte-identical across interp and JIT regardless of guest CW.
+        // The interpreter writes the empty-stack indefinite even with IM=0.
+        // It records exception status rather than dispatching the hardware's
+        // unmasked #IA exception; the memory write is unconditional.
         let mut cpu = Cpu::new();
         let mut mem = Memory::new();
         cpu.regs.ds = 0;
@@ -11546,22 +11286,9 @@ mod tests_execute {
 
     #[test]
     fn fst_empty_stack_writes_indefinite_into_bios_region_when_writes_allowed() {
-        // Regression for `fuzz_jit_diff` overnight cluster A (smallest input
-        // crash-26ba, 17 B). When fuzz-driven EAX lands inside the BIOS
-        // region (0xF0000-0xFFFFF) and an FST [EAX] runs on an empty x87
-        // stack, the JIT writes the float32 indefinite 0xFFC00000 directly
-        // via raw [r15+rsi] host stores while the interpreter routes
-        // through `Memory::prepare_write_addr`, which silently drops the
-        // write whenever `allow_rom_writes` is false (the default — real
-        // hardware chipset write-protects the F-segment). The fuzz harness
-        // now flips `allow_rom_writes = true` so both engines see uniform
-        // memory semantics; this test pins the CPU-layer contract that
-        // FST [BIOS-region] succeeds when ROM-writes are allowed.
-        // See `wrk_docs/2026.05.07 - HLD - JIT vs interp PM32 BIOS-region
-        // write divergence (fuzz harness fix).md`.
-        //
-        // Real-mode segment 0xF000 maps base 0xF0000; offset 0x1000 puts
-        // the destination inside the BIOS region at linear 0xF1000.
+        // FST to the BIOS region must succeed when ROM writes are allowed,
+        // including an empty-stack store of the float32 indefinite.
+        // Segment 0xF000 plus offset 0x1000 targets linear 0xF1000.
         let mut cpu = Cpu::new();
         let mut mem = Memory::new();
         mem.allow_rom_writes = true;
@@ -11593,13 +11320,8 @@ mod tests_execute {
 
     #[test]
     fn fst_empty_stack_drops_write_into_bios_region_by_default() {
-        // Symmetric companion to the test above: when `allow_rom_writes`
-        // is at its default (false), `Memory::write_u32` silently drops
-        // the write to the BIOS region. The interpreter's FST handler
-        // returns Ok(()) and sets the stack-fault status bit, but the
-        // memory at the destination is unchanged. This documents the
-        // platform-protection layer that the fuzz harness must opt out of
-        // to avoid spurious JIT-vs-interp divergences in the BIOS region.
+        // With ROM writes disabled by default, FST still reports stack-fault
+        // status and succeeds, but the BIOS destination bytes stay unchanged.
         let mut cpu = Cpu::new();
         let mut mem = Memory::new();
         // mem.allow_rom_writes left at default (false)
@@ -15186,13 +14908,8 @@ mod tests_execute {
     // Coverage: FDIVR status path identifies the correct divisor
     // ========================================================================
 
-    /// FDIVR computes `mem / ST(0)` for the memory form. The divisor is
-    /// ST(0), NOT the memory operand. ZE must be set when ST(0)=0 and
-    /// must NOT be set when memory=0 (memory is the dividend in FDIVR).
-    /// Verified against host x87 hardware in
-    /// `tests/jit_fpu_empty_stack_probe.rs`. Cluster G of the attempt-17
-    /// fuzz campaign caught the prior bug where the interpreter wrongly
-    /// treated memory as the divisor for FDIVR.
+    /// FDIVR memory form computes `mem / ST(0)`: ST(0) is the divisor.
+    /// ZE must be set for ST(0)=0, not for a zero memory dividend.
     #[test]
     fn test_execute_fdivr_memory_zero_does_not_set_ze() {
         let mut cpu = Cpu::new();
@@ -15513,11 +15230,9 @@ mod tests_execute {
         assert_eq!(&buf[28..38], &fpu.regs[0].0);
     }
 
-    /// Save-area registers are written in stack-relative order: offset 28+10·i
-    /// holds ST(i) = regs[(TOP + i) & 7]. With TOP=6, ST(0) = regs[6] is at
-    /// offset 28, NOT regs[0]. This matches the layout of hardware
-    /// FNSAVE/FRSTOR (verified empirically — see
-    /// `tests/jit_fpu_flags.rs::diag_fnsave_layout_roundtrip`).
+    /// Save-area registers use stack order: offset 28+10·i holds
+    /// ST(i) = regs[(TOP+i) & 7]. With TOP=6, offset 28 holds regs[6],
+    /// matching hardware FNSAVE/FRSTOR.
     #[test]
     fn test_sync_to_x87_save_area_layout_top_nonzero() {
         let mut fpu = Fpu::new();
@@ -16288,12 +16003,9 @@ mod tests_execute {
         assert_eq!(cpu.fpu.status_word & 0x01, 0);
     }
 
-    /// FSQRT's precision is an engine-contract fork: the interpreter computes
-    /// the 80-bit (64-bit-significand) root, while the dynrec-drc binary64
-    /// contract single-rounds on the host double grid — like the basic four
-    /// in `try_numeric_shadow_arith`, and like the binary64 register
-    /// file, whose port this engine is. sqrt(2) separates the two: its
-    /// 64-bit-significand root carries more precision than any widened f64.
+    /// Normal F80 mode computes the 64-bit-significand FSQRT result;
+    /// binary64 mode rounds to the host-double grid. sqrt(2) distinguishes
+    /// the two because its F80 root has more precision than a widened f64.
     #[test]
     fn fsqrt_single_rounds_on_the_binary64_contract_and_stays_80bit_off_it() {
         let f64_root = F80::from_f64(2.0_f64.sqrt());
@@ -16310,9 +16022,8 @@ mod tests_execute {
             "interpreter FSQRT must keep the 64-bit-significand root"
         );
 
-        // dynrec-drc binary64 contract: exactly the host-double root, with
-        // an f64 proof so the native file can adopt it, and PE set (sqrt(2)
-        // is inexact on every grid).
+        // Binary64 mode produces the host-double root with an f64 proof
+        // and PE set: sqrt(2) is inexact at either precision.
         let mut cpu = Cpu::new();
         set_st0_st1(&mut cpu, 2.0, 0.0);
         cpu.fpu.enter_drc_binary64_mode();
@@ -16327,9 +16038,8 @@ mod tests_execute {
         assert_ne!(cpu.fpu.status_word & 0x20, 0, "inexact root must raise PE");
     }
 
-    /// The binary64 FSQRT fast path refuses what it cannot own: a negative
-    /// operand must still fall through to the pure path's IE + indefinite
-    /// result even while the drc contract is active.
+    /// Even in binary64 mode, negative FSQRT operands use the pure path's
+    /// invalid-operation flag and indefinite result.
     #[test]
     fn fsqrt_binary64_fast_path_leaves_negative_operands_to_the_pure_path() {
         let mut cpu = Cpu::new();
@@ -17857,13 +17567,8 @@ mod tests_execute {
         assert_eq!(cpu.fpu.get_top(), 4, "FDECSTP from top=5 must give 4");
     }
 
-    /// FXTRACT on full stack: per host x87 (probe `tmp/probe_fxtract_overflow.rs`)
-    /// and Intel SDM Vol 1 §8.5.1.2, push-overflow with IM=1 overwrites BOTH
-    /// the source slot AND the new TOP slot with the F80 indefinite QNaN.
-    /// Predecessor name kept for grep continuity (was
-    /// `test_stack_push_overflow_kills_false_mutant_via_fxtract`); the
-    /// previous "must not modify ST(0)" assertion locked in a JIT-divergent
-    /// behaviour and has been corrected.
+    /// FXTRACT on a full stack with IM=1 overwrites both the source and
+    /// new TOP slots with the indefinite QNaN (Intel SDM Vol 1 §8.5.1.2).
     #[test]
     fn test_fxtract_full_stack_overflow_writes_indefinite_to_both_slots() {
         let _lock = env_lock();
@@ -18672,15 +18377,9 @@ mod tests_execute {
     }
 
     // ========================================================================
-    // Empty-stack handling on ST(i)-register paths (x87 fix plan HLD)
-    //
-    // Per Intel SDM Vol 1 §8.5.1.1 + §8.3.6.2, x87 operations that see an
-    // empty source slot with IE masked must still produce architecturally
-    // visible state (FP indefinite written, C0/C2/C3 set, pops honoured).
-    // The interpreter previously short-circuited with just
-    // `set_stack_fault(false); return Ok(())` on several ST(i) paths, which
-    // diverged from the JIT (native x87 via FRSTOR/FNSAVE) on subsequent
-    // FNSTSW / FIST stores. These tests pin the corrected behaviour.
+    // Empty-stack handling on ST(i) paths with masked IE: results, condition
+    // codes and pops must follow Intel SDM Vol 1 §8.5.1.1 and §8.3.6.2,
+    // rather than merely setting the stack-fault bit and returning early.
     // ========================================================================
 
     /// Fuzz Repro A (`D9 C2 DB 17` = FLD ST(2); FIST DWORD [BX]).
@@ -18713,8 +18412,8 @@ mod tests_execute {
         );
     }
 
-    /// Fuzz Repro A tail: FIST DWORD after FLD-of-empty must write integer
-    /// indefinite (0x8000_0000), matching JIT byte-for-byte.
+    /// FIST DWORD after FLD of an empty register must write the integer
+    /// indefinite (0x8000_0000).
     #[test]
     fn test_fist_after_fld_of_empty_writes_integer_indefinite() {
         let _lock = env_lock();
@@ -18743,14 +18442,10 @@ mod tests_execute {
         );
     }
 
-    /// Backlog #30 / HLD `2026.04.23 - HLD - JIT fuzz C7 SUPERSEDED`:
-    /// Decoded byte sequence `D9 C2 DB 11` = `FLD ST(2); FIST DWORD [BX+DI]`
-    /// under the RM16 fuzz fixture (DS base = 0x10000, BX=DI=0). The JIT —
-    /// using the host x87 via FRSTOR/FNSAVE — writes 0x80000000 (integer
-    /// indefinite, SDM Vol 1 §8.2.2). The interpreter must match byte-for-byte
-    /// when the source ST(i) is empty on a fresh FPU, going through
-    /// `calc_effective_address` (segment base + 16-bit base/index addressing),
-    /// not just direct-displacement memory operands.
+    /// `D9 C2 DB 11` decodes as `FLD ST(2); FIST DWORD [BX+DI]`. With
+    /// empty ST(2), the store must write integer indefinite 0x80000000
+    /// (SDM Vol 1 §8.2.2). Cover segment-base plus 16-bit base/index
+    /// addressing, not only direct-displacement operands.
     #[test]
     fn test_fld_empty_fist_indefinite_rm16_byte_sequence() {
         use iced_x86::{Decoder, DecoderOptions};
@@ -18961,10 +18656,8 @@ mod tests_execute {
     }
 
     // =========================================================================
-    // Patch 4 — systematic empty-stack handling for arithmetic / unary /
-    // int-arith / store instructions. Each test pins the behaviour that
-    // matches the JIT (native x87 via FRSTOR/FNSAVE) on masked-IE stack
-    // underflow (SDM Vol 1 §8.5.1.1).
+    // Masked empty-stack handling for arithmetic, unary, integer arithmetic
+    // and stores (Intel SDM Vol 1 §8.5.1.1).
     // =========================================================================
 
     /// FADD ST(0), memf32 with empty ST(0): ST(0) becomes FP indefinite.
@@ -19066,41 +18759,26 @@ mod tests_execute {
         assert_eq!(cpu.fpu.get_top(), top_before);
     }
 
-    /// Backlog #31 / Fuzz Repro `DC FE DD 38` = `FDIVR ST(6),ST(0); FNSTSW
-    /// WORD [BX+SI]`. With both source and destination empty, the JIT (via
-    /// real x87 through FRSTOR/FNSAVE) writes status-word low byte 0x41
-    /// (SF+IE only); the low-byte invariant comes from the `set_stack_fault`
-    /// masked-stack-underflow path taking priority over #ZE.
-    ///
-    /// HLD `2026.05.08` partial revert: the **high byte** invariant of this
-    /// test was previously asserted as "C0 must be 0", which is wrong — real
-    /// Intel/AMD x87 (and the JIT via FRSTOR/native FDIVR/FNSAVE)
-    /// **preserves** C0/C2/C3 across a masked-#IS arith stack-underflow
-    /// (verified empirically with three host-x87 microbenchmarks; see HLD
-    /// §3.3). The original `clear_arith_condition_codes` helper that backed
-    /// the C0=0 assertion was deleted; this test now pins the corrected
-    /// invariant: pre-set C0 must be **preserved** by FDIVR-empty.
+    /// `FDIVR ST(6),ST(0); FNSTSW WORD [BX+SI]` with empty operands must
+    /// store status low byte 0x41 (SF+IE): stack underflow takes priority
+    /// over divide by zero. Preserve pre-set C0/C2/C3; masked arithmetic
+    /// stack underflow does not clear them.
     #[test]
     fn test_fdivr_st6_st0_empty_status_word_low_byte_matches_jit() {
         let _lock = env_lock();
         let mut cpu = Cpu::new();
         let mut mem = Memory::new();
         reset_empty_fpu(&mut cpu);
-        // Pre-set C0 in the status word (as if a prior FCOM had set it) to
-        // verify the FDIVR-empty path leaves it alone. Real x87 (and JIT
-        // via FRSTOR/FNSAVE) preserves C0/C2/C3 on a masked-#IS arith
-        // underflow; only IE+SF in the low byte are mutated.
+        // Pre-set C0 as if a prior FCOM set it. Masked arithmetic stack
+        // underflow preserves C0/C2/C3 while setting IE+SF.
         cpu.fpu.status_word = 1 << 8; // C0 = 1
         exec_instr(
             &mut cpu,
             &mut mem,
             instr2(Code::Fdivr_st0_sti, Register::ST6, Register::ST0),
         );
-        // Low-byte hardware oracle: SF (bit 6) + IE (bit 0) must be set.
-        // The Backlog #31 headline differential was `interp=0x45 jit=0x41`
-        // — interp had bit 2 (ZE) set because the old divide-by-zero pre-check
-        // fired before underflow could take priority. The current arithmetic
-        // underflow branch suppresses that ZE, so the low byte is exactly 0x41.
+        // SF (bit 6) and IE (bit 0) must be set, with ZE clear. Stack
+        // underflow must take priority over the divide-by-zero precheck.
         assert_eq!(
             cpu.fpu.status_word & 0xFF,
             0x41,
@@ -19119,20 +18797,9 @@ mod tests_execute {
         );
     }
 
-    /// HLD `2026.05.08` — partial revert of Backlog #31's
-    /// `clear_arith_condition_codes` helper. Real Intel/AMD x87 (and the JIT
-    /// via FRSTOR/native FDIVR/FNSAVE) **preserves** C0/C2/C3 across a
-    /// masked-#IS x87 arithmetic stack-underflow; only IE+SF are set and C1
-    /// is cleared. Pre-fix, the interpreter actively cleared C0/C2/C3,
-    /// causing `fuzz_jit_diff_rm16` to trip whenever an FCOMP-set
-    /// (C0=C2=C3=1) was followed by an FDIVR-on-empty-mem and then an
-    /// FNSTSW (`crash-128ad1dd…`).
-    ///
-    /// Setup: status_word pre-loaded with `0x4500` (C0=C2=C3=1, like a
-    /// just-completed unordered FUCOMPP) and TOP/tag word indicating both
-    /// ST(0) and the next slot are empty. Then issue an `FDIVR DWORD [..]`
-    /// which falls into the Memory/empty branch of `execute_arith`. Post-fix
-    /// the C0/C2/C3 bits must still read 1; pre-fix they would read 0.
+    /// Masked arithmetic stack underflow preserves C0/C2/C3, sets IE+SF
+    /// and clears C1. Preload unordered condition codes, then issue FDIVR
+    /// with empty ST(0): all three condition codes must remain set.
     #[test]
     fn test_fdivr_after_fucompp_empty_preserves_c0_c2_c3_mem() {
         let _lock = env_lock();
@@ -19215,7 +18882,7 @@ mod tests_execute {
     /// host-x87 trace from HLD §3.3 Test 1: low byte `0x41`, high byte
     /// `0x4D` (C0=C2=C3=1, top=1 from the FCOMP pop, C1=0). Pre-fix the
     /// interpreter writes `(0x41, 0x08)` because `clear_arith_condition_codes`
-    /// zeroed C0/C2/C3; post-fix it must match the JIT byte-for-byte.
+    /// zeroed C0/C2/C3; the corrected result must match host x87.
     ///
     /// Modelled steps (after the trivial XOR/CMP setup the interpreter
     /// execution path is identical):
@@ -19233,8 +18900,7 @@ mod tests_execute {
         let mem_addr: usize = 0x800;
         let nstsw_addr: usize = 0x900;
 
-        // Step 1: FDIVR mem with empty stack — ST(0) becomes Indefinite,
-        // SF+IE set. (No condition codes to set; tracks JIT step 2.)
+        // Step 1: FDIVR with empty stack writes indefinite and sets SF+IE.
         mem.write_u32(mem_addr, 0);
         exec_instr(
             &mut cpu,
@@ -19242,9 +18908,8 @@ mod tests_execute {
             Instruction::with1(Code::Fdivr_m32fp, mem_op(mem_addr as i64)).unwrap(),
         );
 
-        // Step 2: FCOMP ST(0) — ST(0) is Indefinite (Special/QNaN); the
-        // unordered FCOMP path sets C0=C2=C3=1 and pops. Mirrors JIT step 3.
-        // (iced-x86 represents `D8 D8` as `Fcomp_st0_sti(ST0, ST0)`.)
+        // Step 2: unordered FCOMP of the indefinite sets C0=C2=C3=1 and pops.
+        // iced-x86 decodes `D8 D8` as `Fcomp_st0_sti(ST0, ST0)`.
         exec_instr(
             &mut cpu,
             &mut mem,
@@ -19260,8 +18925,7 @@ mod tests_execute {
             cpu.fpu.status_word
         );
 
-        // Step 3: second FDIVR mem with (now-)empty stack — must preserve
-        // C0/C2/C3 (the bug being fixed). Mirrors JIT step 5.
+        // Step 3: FDIVR with the now-empty stack must preserve C0/C2/C3.
         exec_instr(
             &mut cpu,
             &mut mem,
@@ -19274,9 +18938,8 @@ mod tests_execute {
             cpu.fpu.status_word
         );
 
-        // Step 4: FNSTSW WORD [nstsw_addr] — write the SW to memory and
-        // assert the high byte is 0x4D (matches host x87 / JIT). Pre-fix the
-        // interpreter wrote 0x08.
+        // Step 4: FNSTSW must store high byte 0x4D, matching host x87;
+        // the buggy interpreter stored 0x08.
         exec_instr(
             &mut cpu,
             &mut mem,
@@ -19404,12 +19067,8 @@ mod tests_execute {
         );
     }
 
-    /// FPTAN on empty ST(0): old ST(0) becomes indefinite (now ST(1) after
-    /// push), and the *pushed* value is also the FP indefinite — NOT 1.0.
-    /// Verified against host x87 hardware via inline asm in
-    /// `tests/jit_fpu_empty_stack_probe.rs`. Earlier model pushed F80::ONE
-    /// to "match the JIT", but the JIT runs native FPTAN which actually
-    /// pushes the indefinite. Cluster G of the attempt-17 fuzz campaign.
+    /// FPTAN on empty ST(0) makes both the source and pushed value
+    /// indefinite; the pushed value must not be 1.0.
     #[test]
     fn test_fptan_empty_writes_indefinite_and_pushes_indefinite() {
         let _lock = env_lock();
@@ -19798,10 +19457,7 @@ mod tests_execute {
             assert_interp_state_byte_matches_host_x87(&cpu, "after FILD m16 (overflow)");
         }
 
-        /// FBLD m80 push-overflow byte-equivalence with host x87.
-        /// Closes RM16 R1.γ residual `crash-7ed7dd58…` — see HLD
-        /// `wrk_docs/2026.05.10 - HLD - JIT vs interp R1 gamma residual
-        /// FBLD-FBSTP BCD indefinite EFLAGS divergence.md`.
+        /// FBLD push overflow must produce a byte-equivalent host x87 state.
         #[test]
         fn fpu_state_byte_equivalence_after_fbld_overflow() {
             let _lock = env_lock();

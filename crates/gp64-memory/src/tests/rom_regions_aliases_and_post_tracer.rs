@@ -460,20 +460,13 @@ fn firmware_mp_table_suppression_hides_paragraph_aligned_signatures() {
     assert_eq!(config, [0x00, b'C', b'M', b'P']);
 }
 
-/// x87 load fast-path panel finding 1 (both lenses' top finding): while
-/// the firmware MP-table filter is armed, an emitted `[r15 + page*8]`
-/// read-probe hit must never serve bytes the helper/interpreter byte
-/// service would rewrite. At HEAD the flat projection had no counterpart
-/// to `tlb_direct_read_ptr`'s global refusal: arming neither flushed the
-/// TLB nor withheld `host_read` on refill, so a warm low-RAM page kept a
-/// live read view serving the raw `_MP_` byte where `read_u8` returns
-/// 0x00 — a divergence the integer inline probes already carried and the
-/// x87 fast path would have widened.
+/// With the firmware MP-table filter armed, flat read views must not
+/// expose raw bytes that `read_u8` rewrites. Arming must flush warm
+/// entries and refill must withhold low-memory read pointers.
 #[test]
 fn firmware_mp_suppression_withholds_flat_read_views_for_low_memory() {
-    // Probe mirror: exactly what emitted dyncore code executes on a read
-    // probe hit — load the supervisor read-view slot, bias-add the raw
-    // linear address, read the host byte.
+    // Probe the flat view: load the supervisor read slot, add the linear
+    // address to its bias, and read the host byte.
     fn probe_read_u8(mem: &Memory, linear: u32) -> Option<u8> {
         let slot = unsafe { *mem.flat_views_ptr().add((linear >> 12) as usize) };
         if slot == 0 {

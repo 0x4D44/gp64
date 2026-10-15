@@ -13453,8 +13453,7 @@ mod tests {
         // ordinary debugging leftover, and the shape a half-finished revert
         // takes — satisfied it while the double-feed defect was fully live
         // again (MDD-BUG-ANVIL-00058). It would also have matched the arm's own
-        // doc comment had that named the call. `dbx_scen_guard.rs` carries the
-        // same correction for the same reason.
+        // doc comment had that named the call.
         let releases_batch = arm_body.lines().any(|line| {
             let code = line.trim_start();
             !code.starts_with("//") && code.contains("rx_bytes.clear()")

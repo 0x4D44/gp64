@@ -1311,8 +1311,8 @@ fn lock_hlt_raises_ud_before_halting() {
     );
 }
 
-/// `lock_prefix_valid` is the byte-slice reader DBX admits LOCK forms with; it
-/// must agree with the interpreter's own table and fail closed on short input.
+/// The byte-slice `lock_prefix_valid` reader must agree with the interpreter's
+/// table and fail closed on short input.
 #[test]
 fn lock_prefix_valid_reads_the_interpreter_table_and_fails_closed() {
     // Memory-destination RMW forms: legal.

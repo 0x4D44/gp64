@@ -302,14 +302,8 @@ pub struct EmulatorStats {
     pub ips: f64,
     /// Million instructions per second
     pub mips: f64,
-    /// JIT execution percentage (0-100)
-    pub jit_percentage: f64,
     /// Interpreter execution percentage (0-100)
     pub interp_percentage: f64,
-    /// JIT blocks compiled
-    pub jit_blocks: u64,
-    /// JIT cache size in bytes
-    pub jit_cache_bytes: usize,
     /// Top opcodes by frequency: (opcode, count, percentage)
     pub top_opcodes: Vec<(u8, u64, f64)>,
     /// Opcode counts snapshot
@@ -339,10 +333,7 @@ impl Default for EmulatorStats {
             timestamp: Instant::now(),
             ips: 0.0,
             mips: 0.0,
-            jit_percentage: 0.0,
             interp_percentage: 0.0,
-            jit_blocks: 0,
-            jit_cache_bytes: 0,
             top_opcodes: Vec::new(),
             opcode_counts: [0; 256],
             memory_reads: [0; 1024],
@@ -981,10 +972,7 @@ mod tests {
         let stats = EmulatorStats::default();
         assert_eq!(stats.ips, 0.0);
         assert_eq!(stats.mips, 0.0);
-        assert_eq!(stats.jit_percentage, 0.0);
         assert_eq!(stats.interp_percentage, 0.0);
-        assert_eq!(stats.jit_blocks, 0);
-        assert_eq!(stats.jit_cache_bytes, 0);
         assert!(stats.top_opcodes.is_empty());
         assert_eq!(stats.frame_time_cpu_ms, 0.0);
         assert_eq!(stats.frame_time_vga_ms, 0.0);

@@ -321,11 +321,8 @@ pub enum DataSegReg {
     FS,
     GS,
 }
-/// CPU type for instruction set filtering and behavior differences
-///
-/// `repr(u8)` fixes the in-memory byte to the declaration discriminant, so
-/// native code may test `Cpu::cpu_type` against a mask built from
-/// [`CpuType::ALL`] and the capability predicates.
+/// CPU type for instruction set filtering and behavior differences.
+/// `repr(u8)` fixes the byte representation to the declaration discriminant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum CpuType {

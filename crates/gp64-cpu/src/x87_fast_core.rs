@@ -318,9 +318,8 @@ define_fast_cores!(
     1e-289
 );
 
-/// FSQRT core over an exactness-proven host-double operand (the dynrec-drc
-/// binary64 contract's unary sibling of the cores above — the reference emulator's double
-/// register file computes sqrt as a host-double op). Host `f64::sqrt` is
+/// FSQRT core over an exactness-proven host-double operand.
+/// Host `f64::sqrt` is
 /// IEEE-correctly-rounded to nearest-even; PE and the residual sign come from
 /// the back-substitution FMA residual `q*q - a` (the div core's technique),
 /// and directed modes step one ulp off the nearest result. The operand floor

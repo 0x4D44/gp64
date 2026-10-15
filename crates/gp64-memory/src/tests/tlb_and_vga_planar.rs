@@ -1,13 +1,8 @@
 use super::*;
 
-/// MDD-BUG-CRUCIBLE-00566: a physical write to an EXECUTED page must dirty
-/// the interpreter's instruction cache.
-///
-/// `write_u32_physical` is the path page walks use to set PDE/PTE Accessed
-/// and Dirty bits. It told dyncore via `smc_before_write` but never marked
-/// the interpreter's cache, so a guest whose page-table page is also
-/// executable could have a hardware A/D update change bytes the interpreter
-/// kept serving from a stale decode.
+/// MDD-BUG-CRUCIBLE-00566: physical writes to executed pages must dirty
+/// the interpreter's instruction cache. A page-table page can also hold
+/// code, so page-walker A/D writebacks must invalidate cached decodes.
 #[test]
 fn physical_write_to_an_executed_page_dirties_the_instruction_cache() {
     let mut mem = Memory::new();
@@ -40,16 +35,9 @@ fn physical_write_to_a_non_executed_page_leaves_the_cache_clean() {
     );
 }
 
-/// MDD-BUG-FLUX-00145: the dynrec-drc raw direct-RAM store leg must dirty
-/// the interpreter's decode cache, the same as an ordinary write.
-///
-/// That leg writes `ram[addr]` directly once every byte carries a
-/// `direct_host_ram_range` proof, which skips `write_u8`'s
-/// `mark_instr_cache_dirty_range`. Since the proof excludes video, LFB, EMS
-/// and ROM, those stores land in ordinary guest RAM — where guest code lives
-/// — and the interpreter still runs under `--engine dynrec-drc` for every
-/// 16-bit, real-mode, V86 and gap fallback, so it could serve a stale decode
-/// of code the drc had just patched.
+/// MDD-BUG-FLUX-00145: a raw direct-RAM write must dirty the interpreter's
+/// decode cache just like an ordinary write. A direct-RAM proof grants
+/// access but does not perform the normal writer's cache side effects.
 #[test]
 fn a_drc_direct_ram_write_over_executed_bytes_dirties_the_instruction_cache() {
     let mut mem = Memory::new();
@@ -70,9 +58,8 @@ fn a_drc_direct_ram_write_over_executed_bytes_dirties_the_instruction_cache() {
     );
 }
 
-/// The control, matching the pair above it: the executed-page filter must
-/// still do its job, or the fix would dirty the cache on every drc store and
-/// throw away the filter that makes it cheap.
+/// The executed-page filter must still avoid dirtying the cache on
+/// writes to pages that have never held decoded instructions.
 #[test]
 fn a_drc_direct_ram_write_to_a_non_executed_page_leaves_the_cache_clean() {
     let mut mem = Memory::new();

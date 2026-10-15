@@ -1,31 +1,20 @@
-//! Memory-owned direct page-proof publication (dynrec-direct WI-C1).
+//! Memory-owned direct page-proof publication.
 //!
-//! `gp64-memory` owns the guest memory model. The dynrec-direct engine does
-//! not invent an independent one: it consumes page-indexed proof entries that
-//! this module publishes, and revalidates them against the stable
-//! [`DirectGenerations`] block with single emitted loads.
-//!
-//! Dependency direction is `dynrec crate -> gp64-memory`. This module must
-//! never depend on the dynrec crate.
+//! `gp64-memory` publishes page-indexed proof entries and owns the generation
+//! words against which they must be revalidated.
 //!
 //! # Pinning contract
 //!
-//! An ordinary-RAM host pointer remains stable while its proof is valid. The
-//! backing `Vec` reserves its normal pinned capacity
-//! (`DOS_RAM_CEILING + FETCH_PADDING`) in `Memory::new()`, and its private shape
-//! means every size change routes through `Memory::resize_ram`. That API
-//! invalidates every proof before it may shorten or reallocate the backing —
-//! never a silent realloc beneath a valid proof.
+//! Ordinary-RAM host pointers stay stable while their proofs are valid.
+//! `Memory::resize_ram` invalidates all proofs before shortening or
+//! reallocating the backing.
 //!
 //! # Generations contract
 //!
-//! The [`DirectGenerations`] block lives at a stable heap address for the
-//! lifetime of the owning `Memory` (it is `Box`ed; moving `Memory` does not
-//! move the block). Emitted code may cache the raw pointer from
-//! [`Memory::direct_generations_ptr`] and compare cached generation words with
-//! single loads — no Rust calls. Every existing epoch bump in `Memory`
-//! (translation, A20, memory policy, descriptor) writes through to this block
-//! in the same helper that bumps the `u64` epoch; a miss is a correctness bug.
+//! The boxed [`DirectGenerations`] block stays at a stable heap address for
+//! the owning `Memory`'s lifetime, including moves of `Memory`. Every
+//! translation, A20, memory-policy and descriptor epoch bump updates this
+//! block in the same helper.
 
 use std::cell::Cell;
 
@@ -45,8 +34,8 @@ pub const PROOF_PERM_WRITE: u32 = 1 << 1;
 /// Proof permission bit: page is user-accessible.
 pub const PROOF_PERM_USER: u32 = 1 << 2;
 
-/// Watch flag bit: stores to this page must run the emitted SMC invalidation
-/// stub because a source-code write notifier is bound to this memory.
+/// Watch flag bit: stores need SMC notification because a source-code
+/// write notifier is bound to this memory.
 pub const PROOF_WATCH_SOURCE_NOTIFIER: u32 = 1 << 0;
 
 /// `physical_page_id` published for pages whose physical identity is
@@ -55,11 +44,10 @@ pub const PROOF_WATCH_SOURCE_NOTIFIER: u32 = 1 << 0;
 /// always `NonDirect`.
 pub const AMBIGUOUS_PHYSICAL_PAGE_ID: u32 = u32::MAX;
 
-/// Page-indexed direct proof entry (HLD 11.1).
+/// Page-indexed direct proof entry.
 ///
-/// Only entries whose class is `DirectRam` or `WatchedDirectRam` carry usable
-/// host pointers; `NonDirect` entries always have null pointers and must
-/// never enter an inline checked-helper path in generated code.
+/// Only `DirectRam` and `WatchedDirectRam` entries carry usable host
+/// pointers; `NonDirect` entries always have null pointers.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirectPageProof {
@@ -91,17 +79,16 @@ pub struct DirectPageProof {
 pub enum DirectProofClass {
     /// Ordinary RAM with direct read/write pointers and no watch work.
     DirectRam,
-    /// Ordinary RAM with direct pointers plus a required emitted SMC watch
-    /// stub before stores (`watch_flags` says why).
+    /// Ordinary RAM with direct pointers; stores require SMC notification
+    /// as indicated by `watch_flags`.
     WatchedDirectRam,
-    /// No direct pointer use by generated code (VGA/MMIO/ROM/EMS-ambiguous/
-    /// descriptor-snooped/out-of-RAM/diagnostic-filtered pages).
+    /// No direct pointer access (VGA/MMIO/ROM/EMS-ambiguous,
+    /// descriptor-snooped, out-of-RAM or diagnostic-filtered pages).
     NonDirect,
 }
 
-/// Memory-side named rejection reasons for proofs that cannot be published at
-/// all (the access would fault, or required paging side effects are not yet
-/// committed). The dynrec crate maps these onto its own `ProofRejectReason`.
+/// Rejection reasons for proofs that cannot be published: the access would
+/// fault or required paging side effects are not yet committed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProofUnavailableReason {
     /// PDE or PTE not present — the access would raise #PF.
@@ -176,10 +163,7 @@ thread_local! {
 
 impl Memory {
     /// Raw pointer to the stable-heap [`DirectGenerations`] block.
-    ///
-    /// Valid for the lifetime of this `Memory`; stable across moves of the
-    /// `Memory` value itself. Generated code compares cached generation words
-    /// against this block with single loads.
+    /// Valid for this `Memory`'s lifetime and stable across moves of `Memory`.
     #[inline]
     pub fn direct_generations_ptr(&self) -> *const DirectGenerations {
         self.core.direct_generations_ptr()
@@ -193,14 +177,8 @@ impl Memory {
 
     /// Current memory-side descriptor-table generation.
     ///
-    /// Single source of truth for descriptor admission guards. Bumped by:
-    /// - the GDT/LDT byte-write snoop (`snoop_gdt_write_ext`);
-    /// - snoop-range (re)programming (`set_gdt_snoop_range`,
-    ///   `set_ldt_snoop_range`, `clear_ldt_snoop_range`), which reflect
-    ///   GDTR/LDTR reloads;
-    /// - the root engine loop, which calls [`Self::bump_descriptor_generation`]
-    ///   whenever the CPU-side descriptor-table generations change (LGDT/LLDT
-    ///   and task switches), alongside the dynrec driver notification.
+    /// Bumped by GDT/LDT byte-write snoops, snoop-range (re)programming,
+    /// and explicit [`Self::bump_descriptor_generation`] calls.
     #[inline]
     pub fn dynrec_descriptor_generation(&self) -> u64 {
         self.core.dynrec_descriptor_generation()
@@ -211,35 +189,19 @@ impl Memory {
         self.core.bump_descriptor_generation()
     }
 
-    /// WI-G1 global staleness funnel (renamed from `bump_proof_word`): bump
-    /// the global word 0 AND bump every page word in the guarded-page
-    /// interest set, so every bound proof slot fails its emitted per-page
-    /// generation compare. Word 0's only emitted readers are
-    /// PermissionDenied PARTIAL binds (their slot pointer targets word 0
-    /// because the failed publish named no physical page); full binds read
-    /// their own page words. Every sweeping global-class epoch helper
-    /// routes through here (descriptor events are admission-stamp-only and
-    /// do NOT sweep — see `bump_descriptor_generation`); the SOURCE class
-    /// instead uses the page-targeted
+    /// Bump global word zero and every page word in the guarded-page
+    /// interest set, staling all bound proofs. Descriptor events update
+    /// only the admission stamp; source events instead use
     /// [`Self::bump_dynrec_source_generation_for_page`].
     ///
-    /// Interior mutability (`&self`): the guarded set is RefCell-backed
-    /// because registration happens through `&Memory` at bind time.
+    /// Registration uses `&Memory`, so the guarded set uses interior mutability.
     pub(crate) fn stale_all_guarded_pages(&self) {
         self.core.stale_all_guarded_pages()
     }
 
-    /// Page-targeted dynrec source bump (WI-G1): a compiled-source event on
-    /// `physical_page_id` — range registration/removal, or a drained
-    /// foreign-write record — advances that page's generation word (staling
-    /// exactly the slots bound to it) plus the global `source_generation`
-    /// word (the gap-cache stamp). The global proof word 0 is NOT bumped:
-    /// source events are per-page by nature, and word 0's only emitted
-    /// readers (PermissionDenied partial binds) must by design never be
-    /// staled by source events. Interior mutability (`&self`): the dynrec side holds only a
-    /// shared borrow at registration time, and the emitted SMC stub bumps
-    /// the same two words directly from generated code via the slot-held
-    /// page-word pointer.
+    /// Advance one physical page's generation word and the global source
+    /// generation. Unlike a global sweep, this does not bump proof word zero.
+    /// Interior mutability permits updates through a shared `&Memory` borrow.
     #[inline]
     pub fn bump_dynrec_source_generation_for_page(&self, physical_page_id: u32) {
         self.core
@@ -265,9 +227,8 @@ impl Memory {
         self.core.page_generation_word_addr(physical_page_id)
     }
 
-    /// `(base, len)` of the pinned per-page generation table, for the
-    /// dynrec foreign-write snoop attachment. Same lifetime contract as
-    /// [`Self::page_generation_word_addr`].
+    /// Base and length of the pinned per-page generation table.
+    /// Same lifetime contract as [`Self::page_generation_word_addr`].
     #[inline]
     pub fn page_generation_table_ptr(&self) -> (*const Cell<u32>, usize) {
         self.core.page_generation_table_ptr()
@@ -312,9 +273,7 @@ impl Memory {
         self.core.guarded_page_count()
     }
 
-    /// Cumulative global-class sweeps performed by
-    /// [`Self::stale_all_guarded_pages`] (WI-G1 diagnostics; the dynrec
-    /// driver folds the delta into its counter schema).
+    /// Cumulative global-class sweeps by [`Self::stale_all_guarded_pages`].
     #[inline]
     pub fn dynrec_generation_sweeps(&self) -> u64 {
         self.core.dynrec_generation_sweeps()
@@ -887,11 +846,9 @@ mod tests {
 
     // ── DD-UNSAFE-1: write-pointer provenance ────────────────────────────
 
-    /// Published pointers derive from the construction-time `ram_base`
-    /// mutable-provenance pointer (captured via `RamBacking::host_base`), never
-    /// from a `&self`-borrowed slice — so host-side (and emitted)
-    /// stores through the published write pointer are sound under the Rust
-    /// aliasing model while a shared `&Memory` borrow is live.
+    /// Published pointers derive from the mutable-provenance RAM base,
+    /// not a shared slice. Stores through them remain sound while a shared
+    /// `&Memory` borrow is live.
     #[test]
     fn published_pointers_derive_from_ram_base_provenance() {
         let mem = Memory::new();
@@ -905,8 +862,7 @@ mod tests {
             .unwrap();
         assert_eq!(published.proof.write_ptr as usize, base + 0x52000);
         assert_eq!(published.proof.read_ptr as usize, base + 0x52000);
-        // The aliasing pattern generated code performs: a store through the
-        // published pointer while the shared `&Memory` borrow is live.
+        // A store through the published pointer while `&Memory` is live.
         // SAFETY: the Write proof grants the whole pinned 4 KiB page.
         unsafe { published.proof.write_ptr.add(0x123).write(0xA5) };
         assert_eq!(mem.ram[0x52123], 0xA5);
@@ -1426,8 +1382,7 @@ mod tests {
             q_before,
             "other pages' words do not"
         );
-        // Word 0 stays put: source events are per-page, and word 0 has no
-        // emitted readers after WI-G1.
+        // Source events are per-page and leave global proof word zero unchanged.
         assert_eq!(after.proof_generation, before.proof_generation);
         assert_eq!(after.map_generation, before.map_generation);
         assert_eq!(after.a20_generation, before.a20_generation);

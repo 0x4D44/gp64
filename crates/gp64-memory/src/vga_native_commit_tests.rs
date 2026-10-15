@@ -1,9 +1,6 @@
-//! Tests for the dyncore VGA chain4 native-store fast path
-//! (`vga_chain4_plain_store_range` + `commit_vga_chain4_plain_byte`): the
-//! native dual-write commit must be byte-for-byte identical to the
-//! interpreter's chain-4 write handler (`write_u8`) in exactly the plain
-//! pipeline state the predicate admits, and the predicate must admit ONLY
-//! interpreter-equivalent states (the by-construction coupling guard).
+//! Tests for direct VGA chain-4 commits. Admission must select exactly
+//! the plain pipeline states where `commit_vga_chain4_plain_byte` matches
+//! the interpreter's `write_u8` handler byte for byte.
 use super::*;
 
 /// A `Memory` in the plain chain-4 Mode 13h state the fast path targets:
@@ -27,9 +24,8 @@ fn plain_chain4_mem(memory_map_select: u8) -> Memory {
     mem
 }
 
-/// MDD-BUG-CRU-01474: a chain-4 fast commit into a recorded page-table
-/// frame inside the VGA aperture moves the PT-write tripwire, as the drc
-/// native commit does.
+/// MDD-BUG-CRU-01474: a chain-4 commit into a recorded page-table frame
+/// inside the VGA aperture must move the PT-write tripwire.
 #[test]
 fn interp_chain4_fast_commit_into_a_pt_frame_bumps_the_tripwire() {
     let mut mem = plain_chain4_mem(0);
@@ -178,11 +174,8 @@ fn vga_predicate_admits_only_interpreter_equivalent_states() {
     assert_eq!(mem_i.hash_state(), mem_n.hash_state());
 }
 
-/// §4.4 the narrowing that de-false-FAILs the dyncore A/B gate:
-/// `hash_vga_parity` is deterministic, IGNORES general (non-video) RAM (the
-/// property that stops the false FAILs), and still flips on every VGA axis a
-/// store-lever bug could corrupt — planes_flat, the CPU-visible video window,
-/// and a VGA-pipeline state field.
+/// `hash_vga_parity` is deterministic, ignores general RAM, and changes
+/// on plane data, CPU-visible video bytes or VGA pipeline state changes.
 #[test]
 fn hash_vga_parity_scopes_to_vga_only() {
     // (1) Deterministic (A/A): the same Memory hashed twice is equal.
@@ -241,14 +234,9 @@ fn hash_vga_parity_scopes_to_vga_only() {
     );
 }
 
-/// §4.4 lever seam (production construction path): with the plain chain-4
-/// Mode-13h state built through the REAL pipeline application
-/// (`apply_vga_pipeline`, distinct from `plain_chain4_mem`'s direct field
-/// poke), the native store-lever commit (`commit_vga_chain4_plain_byte`)
-/// reproduces the interpreter write (`write_u8`) byte-for-byte in BOTH the
-/// de-interleaved `planes_flat` and the `ram` video-window mirror, across
-/// offsets covering all four chain-4 plane selects. This is the exact seam the
-/// dyncore A/B parity gate protects.
+/// With Mode 13h constructed through `apply_vga_pipeline`, direct
+/// chain-4 commits must match `write_u8` in both `planes_flat` and the
+/// RAM video mirror across all four chain-4 plane selects.
 #[test]
 fn chain4_native_commit_byte_identical_to_interpreter() {
     // Plain chain-4 Mode 13h via the production pipeline-application entry

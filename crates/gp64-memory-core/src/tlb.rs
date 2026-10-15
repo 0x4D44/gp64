@@ -13,9 +13,8 @@ use crate::flat_tlb;
 pub const TLB_SIZE: usize = 4096;
 
 /// Right shift in the software-TLB index hash
-/// `(page ^ (page >> TLB_HASH_SHIFT)) & (TLB_SIZE - 1)`. [`SoftwareTlb::index`]
-/// and the DBX emitted probe (`gp64_dyncore` `emit_tlb_slot_probe`) both
-/// read this one constant, so the Rust and emitted slot choices cannot drift.
+/// `(page ^ (page >> TLB_HASH_SHIFT)) & (TLB_SIZE - 1)`.
+/// Shared by [`SoftwareTlb::index`] and the interpreter's raw probes.
 pub const TLB_HASH_SHIFT: u8 = 8;
 
 /// TLB flag: page is writable (PDE.W & PTE.W)
@@ -33,9 +32,7 @@ pub(crate) const TLB_FLAG_GLOBAL_LARGE: u8 = 0x10;
 pub const TLB_INVALID_TAG: u32 = 0xFFFF_FFFF;
 
 /// Software-TLB slot for `linear_page`: `(p ^ (p >> TLB_HASH_SHIFT)) & (TLB_SIZE - 1)`.
-///
-/// The one definition of the hash (LLD 2.1). The DBX emitted probe reads
-/// [`TLB_HASH_SHIFT`]; the interpreter's raw probes adopt this in M2.
+/// Shared by table lookups and the interpreter's raw probes.
 #[inline(always)]
 #[must_use]
 pub const fn tlb_index(linear_page: u32) -> usize {
@@ -92,19 +89,9 @@ pub struct SoftwareTlb {
     flat: flat_tlb::FlatTlbViews,
     /// Number of live global authority entries, maintained at every mutation.
     pub(crate) global_count: usize,
-    /// **Oracle O3 (forced-miss sweep), instrumented builds only.** When set, the
-    /// authoritative hashed table fills as usual but NOTHING is published into the
-    /// flat projection — so every emitted probe reads a null view and every native
-    /// memory operation takes its slow exit.
-    ///
-    /// The interpreter is unaffected (it reads the hashed table), so the guest runs
-    /// exactly the same program by an entirely different route: every memory access
-    /// leaves native code through the MEM-RESTART stub, is re-run by the
-    /// interpreter, and re-enters. Final `Cpu` state must be bit-identical to the
-    /// un-suppressed run. That is the ONLY oracle for MEM-RESTART clause 1
-    /// (commit-last atomicity): a form whose slow branch sits AFTER its commit
-    /// point double-commits, which the poisoning oracle O2 is structurally blind to
-    /// (a post-op spill overwrites the poison with plausible-but-wrong values).
+    /// Oracle O3 flat-projection suppression, for instrumented builds.
+    /// The authoritative hashed table fills normally while all flat views
+    /// stay null. Interpreter translations continue using the hashed table.
     #[cfg(any(test, debug_assertions, feature = "test-instrumentation"))]
     suppress_flat: bool,
     /// One bit per 4 MiB linear region (1024 regions): set when a 4 MiB PSE
@@ -253,24 +240,16 @@ impl SoftwareTlb {
             self.flat.null_page(displaced);
         }
 
-        // Subset-argument clause 2, made self-checking: a nonzero `host_write`
-        // implies the page lies inside the machine's backing, which the
-        // machine sizes no larger than the SMC watch bitmap (PC: `ram_len <=
-        // MAX_RAM_SIZE`), hence the physical page is inside the bitmap's range. That is what makes the
-        // emitted `phys < SMC_CODE_PAGE_COUNT` bound check vacuous on the hit
-        // path and therefore deletable. `ram_len <= MAX_RAM_SIZE` is ENFORCED
-        // by the assert in `resize_ram` (the single growth funnel), not merely
-        // assumed of the flat-memory layout — MDD-BUG-FLUXHOMEARPA-00022 was exactly
-        // this premise silently failing when expand_ram grew RAM past a
-        // bound the bitmap didn't cover.
+        // A nonzero `host_write` must lie inside the backing, which the
+        // machine sizes within the SMC watch bitmap. `resize_ram` enforces
+        // the size bound (MDD-BUG-FLUXHOMEARPA-00022).
         debug_assert!(
             host_write.is_null() || (physical_page as usize) < self.flat.watch_page_count(),
             "writable page {physical_page:#x} lies outside the SMC watch bitmap range"
         );
 
-        // O3: with the forced-miss sweep armed, the authoritative fill below still
-        // happens (the interpreter needs it) but the projection stays null, so every
-        // emitted probe misses.
+        // During O3 suppression, fill the authoritative table below but
+        // leave the flat projection null.
         if !self.flat_projection_suppressed() {
             // Write-view nullity folds BOTH divert predicates: SMC-watched
             // code pages and recorded paging-structure frames (EXP-N005).
@@ -347,26 +326,13 @@ impl SoftwareTlb {
 
     /// Oracle O3: arm/disarm flat-projection suppression.
     ///
-    /// Arming nulls every currently-published page (by walking the live hashed
-    /// tags, the same bounded walk `flush` uses — never a 32 MiB memset) so the
-    /// sweep takes effect immediately rather than only for future fills. That
-    /// leaves the two halves of the TLB deliberately incoherent: the flat views
-    /// are null while the authoritative hashed tags still hit.
+    /// Arming nulls published pages by walking the live hashed tags, leaving
+    /// the authoritative hashed table intact. Disarming must flush those
+    /// tags too: otherwise warm hits never reach `tlb_insert` to republish
+    /// the flat views (MDD-BUG-CRUCIBLE-00417).
     ///
-    /// MDD-BUG-CRUCIBLE-00417: disarming therefore has to put them BACK in
-    /// agreement, and clearing the flag alone did not. This comment used to
-    /// claim no republish was needed because "the projection refills as the
-    /// guest faults pages back in" — it cannot. Those hashed tags are still
-    /// valid, so `tlb_lookup` keeps hitting, the translators return without
-    /// walking the page tables, and `tlb_insert` is never reached. The flat
-    /// slots stay null indefinitely: dyncore keeps taking slow exits long after
-    /// suppression is nominally off, and if suppression was armed before the
-    /// first fill the projection-coherence oracle can even certify the
-    /// incoherent state, because `nonzero_publishes` never left zero.
-    ///
-    /// `flush` is exactly the missing half — it drops the hashed tags as well,
-    /// so the next access re-walks and republishes both sides together. Bounded
-    /// at TLB_SIZE, and this whole API is instrumented-builds-only.
+    /// The next access re-walks and republishes both sides together. The
+    /// walk is bounded at TLB_SIZE; this API is instrumented-builds-only.
     #[cfg(any(test, debug_assertions, feature = "test-instrumentation"))]
     pub(crate) fn set_flat_suppressed(&mut self, on: bool) {
         self.suppress_flat = on;
@@ -402,35 +368,20 @@ impl SoftwareTlb {
         }
     }
 
-    /// Mark or unmark a physical page as holding dyncore-compiled code.
+    /// Mark or unmark a physical page as watched for writes.
     ///
-    /// This folds the SMC fast-path predicate into write-view nullity: a watched
-    /// page publishes `0` in both write views, so the emitted store probe's
-    /// single `test`/`jz` subsumes the per-store code-page map lookup. The SMC
-    /// *decision authority* (the `smc_store` trampoline and the interpreter) is
-    /// unchanged — only the fast-path predicate moved from probe time to fill
-    /// time.
-    ///
-    /// A transition sweeps the 4096 hashed slots and republishes the write views
-    /// of every entry mapping this physical page. Read views are untouched:
-    /// watching a page never restricts reads.
+    /// Watched pages publish zero in both write views, requiring the checked
+    /// path. A transition sweeps the hashed slots and republishes write
+    /// views for this physical page. Read views remain unchanged.
     pub fn set_page_watched(&mut self, physical_page: u32, on: bool) {
         if !self.flat.set_watched(physical_page, on) {
             // No bit changed, so no projection entry can be affected.
             return;
         }
-        // Un-watching must not republish a write view that something else still
-        // requires null: the nullity decision is the OR of every predicate,
-        // exactly as at fill time.
-        //
-        // - the PT-frame fold (EXP-N005);
-        // - the O3 forced-miss sweep (MDD-BUG-CRUCIBLE-00416). Un-watching is
-        //   ordinary dyncore cache lifecycle — eviction queues it and dispatch
-        //   reconciliation performs it — so without this an unwatch during a
-        //   suppressed run republished nonzero W0/W3 and let a native store hit
-        //   inside a run whose whole premise is that every memory operation
-        //   misses. Watch-bit bookkeeping and the slots-scanned counter below
-        //   still happen; only the nonzero republish is withheld.
+        // Un-watching must not republish a write view that still needs to be
+        // null for a PT frame or O3 suppression (MDD-BUG-CRUCIBLE-00416).
+        // Watch bookkeeping and the slots-scanned counter still advance;
+        // only the nonzero republish is withheld.
         let nulled =
             on || self.flat.is_pt_frame(physical_page) || self.flat_projection_suppressed();
         for i in 0..TLB_SIZE {
@@ -445,13 +396,9 @@ impl SoftwareTlb {
         self.flat.add_slots_scanned(TLB_SIZE as u64);
     }
 
-    /// Record a physical frame as a paging-structure page (EXP-N005).
-    ///
-    /// A first record sweeps the hashed slots and nulls the write views of
-    /// every live entry mapping this frame, exactly like
-    /// `set_page_watched(_, true)` — that divert is what routes warm-TLB and
-    /// emitted stores into `Memory::smc_before_write`, where the PT-write
-    /// tripwire fires. Returns `true` on the first record of this frame.
+    /// Record a physical paging-structure frame. On the first record,
+    /// null write views for every live hashed entry mapping it so writes
+    /// reach the PT-write tripwire. Returns true on that first record.
     pub fn record_pt_frame(&mut self, physical_page: u32) -> bool {
         if !self.flat.set_pt_frame(physical_page) {
             return false;

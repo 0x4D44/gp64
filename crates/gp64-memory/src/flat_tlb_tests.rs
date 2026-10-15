@@ -70,9 +70,7 @@ impl Lcg {
 
 #[test]
 fn a_fill_publishes_a_bias_that_reconstructs_the_host_pointer() {
-    // The central arithmetic claim: entry + RAW linear == the host byte, with no
-    // in-page mask anywhere. If this is wrong, every emitted probe reads the
-    // wrong address.
+    // Adding the raw linear address to the bias must recover the host byte.
     let mut mem = Memory::new();
     let page = 0x20u32; // physical 0x20000: plain RAM, below the VGA aperture
     mem.tlb_insert(page, page, true, true, true);
@@ -117,10 +115,8 @@ fn op2_a_colliding_insert_nulls_the_displaced_pages_views() {
 
     mem.tlb_insert(q, 0x31, true, true, true);
 
-    // Assert via the ORACLE first, then the specific slots. Order matters: this
-    // is what proves O-P1(b) is itself non-vacuous — it is the check the dyncore
-    // differential harness relies on, so it must be the thing observed red, not
-    // merely a bespoke assertion that happens to sit in front of it.
+    // Check the oracle first, then specific slots, to prove the oracle
+    // itself detects the corruption rather than only a bespoke assertion.
     assert_projection_coherent(&mem, "after a colliding insert");
     assert_all_views_null(&mem, p, "p was collision-evicted by q");
     assert_ne!(
@@ -202,14 +198,9 @@ fn a_flush_nulls_every_live_page() {
 
 #[test]
 fn op3_view_nullity_matches_the_interpreter_hit_rule_across_the_flag_lattice() {
-    // O-P3: the section 7.1/7.2 lemmas as an executable statement. For every
-    // point in the flag lattice a view is nonzero IFF the authoritative entry
-    // would let the interpreter take its fast path at that CPL:
-    //   read  hit <=> host_read  != null   (+ USER for CPL 3)
-    //   write hit <=> host_write != null   (+ USER for CPL 3)
-    // and `SoftwareTlb::insert` publishes host_write only when
-    // writable AND dirty AND rom-allowed AND host-accessible AND NOT VGA —
-    // which is why the emitted WRITABLE/DIRTY/WP tests were already redundant.
+    // For every flag combination, a nonzero view must agree with the
+    // authoritative entry's fast-path permission at that CPL. Writes need
+    // a writable, dirty, ROM-allowed, host-accessible page outside VGA.
     let mut checked = 0usize;
     let mut saw_read_hit = false;
     let mut saw_write_hit = false;
@@ -405,9 +396,8 @@ fn any_instant_smc_fold_holds_under_arbitrary_interleavings() {
     //
     //   watched(phys) ⇒ every live hashed entry mapping phys has W0 == W3 == 0.
     //
-    // This is the direction that kills — a watched page with a permissive write
-    // view is a store that could commit inline over live compiled code — and,
-    // unlike O-P1(c)'s dispatch-entry equality, it must hold at every instant.
+    // A watched page must never have a permissive write view, including
+    // between mutations rather than only at observation boundaries.
     // We also re-assert the full projection coherence after every op.
     //
     // Deterministic across a spread of seeds; a failure is reproducible from the
@@ -529,9 +519,8 @@ fn any_instant_smc_fold_holds_under_arbitrary_interleavings() {
 
 #[test]
 fn view_layout_constants_match_what_emitted_code_will_assume() {
-    // The emitted probe reaches the write view by a fixed disp32 and the CPL-3
-    // pair by a publication-time addend. Both must be identical for the two CPL
-    // states, or one pinned register cannot serve four views.
+    // Read-to-write and supervisor-to-user deltas must select the same
+    // relative view offsets for both CPL states.
     assert_eq!(FLAT_VIEW_WRITE_DELTA, 0x0080_0000);
     assert_eq!(FLAT_VIEW_CPL3_DELTA, 0x0100_0000);
     let mem = Memory::new();
@@ -542,20 +531,10 @@ fn view_layout_constants_match_what_emitted_code_will_assume() {
 
 // ---- O3 suppression vs the watch-transition publisher (MDD-BUG-CRUCIBLE-00416) ----
 
-/// Un-watching must not republish write views while the O3 sweep is armed.
-///
-/// The exact sequence from the bug: fill a live writable page, arm the sweep,
-/// watch, then unwatch. O3 promises every native memory operation exits through
-/// MEM-RESTART, which it enforces by keeping all four views null — so a
-/// republish here lets a native store hit during a run whose entire premise is
-/// that every memory operation missed.
-///
-/// This is ordinary dyncore cache lifecycle, not an exotic path: eviction
-/// queues the unwatch and dispatch reconciliation performs it.
-///
-/// The complement — unwatching DOES restore the exact biased pointer when the
-/// sweep is not armed — is `watching_a_page_nulls_its_write_views_and_
-/// unwatching_restores_them` above, which must keep passing unchanged.
+/// Un-watching must not republish write views during O3 suppression.
+/// Fill a writable page, arm suppression, watch, then unwatch: all four
+/// views must remain null. Without suppression, unwatching must restore
+/// the exact biased pointer, as checked by the complementary test above.
 #[test]
 fn o3_suppression_keeps_write_views_null_across_a_watch_unwatch_cycle() {
     let mut mem = Memory::new();

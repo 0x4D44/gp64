@@ -786,7 +786,6 @@ pub fn unpack_exepack(data: &[u8]) -> Result<Vec<u8>> {
 /// Extract the original entry point (CS:IP) from an EXEPACK executable, if present.
 ///
 /// Values are the *relative* CS:IP from the packed file (i.e. before the loader adds `load_segment`).
-/// This is useful for heuristics like disabling JIT until control transfers to the unpacked program.
 pub fn exepack_real_entry(data: &[u8]) -> Option<(u16, u16)> {
     let header = find_exepack_header(data, false)?;
     if header.dest_len == 0 {

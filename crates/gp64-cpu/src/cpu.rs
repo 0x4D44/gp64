@@ -3129,17 +3129,15 @@ impl Cpu {
         }
         Ok(())
     }
-    /// Return the table-level descriptor generations used by dynrec proofs.
+    /// Return the table-level descriptor generations.
     #[inline]
     pub fn descriptor_table_generations(&self) -> (u64, u64) {
         (self.regs.gdt_generation, self.regs.ldt_generation)
     }
     /// Return the generation for the descriptor table addressed by `selector`.
     ///
-    /// This is deliberately table-level, not per-descriptor. DPMI and raw GDT
-    /// writes can mutate descriptor memory through several paths; until the CPU
-    /// owns per-entry generations, dynrec engines invalidate conservatively
-    /// when the containing table changes.
+    /// This is table-level, not per-descriptor: DPMI and raw GDT writes can
+    /// mutate descriptor memory through several paths.
     #[inline]
     pub fn descriptor_table_generation_for_selector(&self, selector: u16) -> u64 {
         if (selector & 0x0004) != 0 {

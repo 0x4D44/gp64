@@ -499,14 +499,9 @@ fn test_rapid_memory_block_cycle() {
     assert_eq!(dpmi.memory_blocks.len(), 0);
 }
 
-/// Regression test for JIT RSI/RDI preservation bug
-/// The JIT was clobbering RSI when computing memory addresses
+/// Exercise DPMI descriptor allocation with initialized index registers.
 #[test]
 fn test_jit_rsi_preservation_regression() {
-    // This is a unit-level test that verifies the conceptual fix
-    // The actual JIT test requires integration testing
-    // Here we just verify DPMI operations don't corrupt state
-
     let mut dpmi = Dpmi::new();
     let mut cpu = Cpu::new();
     let mut memory = Memory::new();
@@ -524,8 +519,6 @@ fn test_jit_rsi_preservation_regression() {
 
     // Note: DPMI operations may legitimately use EDI for buffer pointers
     // But ESI should generally be preserved unless documented as output
-    // This test is mainly for documentation - actual JIT regression testing
-    // requires the full emulator integration
 }
 
 #[test]

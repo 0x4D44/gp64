@@ -1,20 +1,13 @@
-//! The `X86Machine` contract (LLD 2026.10.02 §3, HLD R1/R3).
+//! The `X86Machine` contract.
 //!
-//! The x86 engines become generic over this trait in M2 (interpreter) and M3
-//! (DRC). It is the engines' only view of a machine's memory and execution
-//! policy that is not already on `MemoryAccess`/`PagedMemory`.
+//! The interpreter uses this trait for memory and execution policy beyond
+//! `MemoryAccess`/`PagedMemory`.
 //!
-//! **Sealing (LLD 3.1).** The compiler cannot seal a trait whose
-//! implementations live in other crates. The trait is therefore `unsafe` (an
-//! implementation that hands out bad pointers or proofs is engine UB), has the
-//! hidden supertrait [`__audited::AuditedMachine`], and the allow-list audit in
-//! `tests/config_surface.rs` (`x86_machine_implementations_are_audited`) pins
-//! the implementing types.
-//!
-//! **M1 status.** Every item is declared. Items whose only consumers arrive
-//! with M2 or M3 carry documented defaults; a machine overrides them in the
-//! step that adds the consumer. A default never licenses a raw access: the
-//! preludes default to the checked route.
+//! Implementations live in other crates, so the trait is `unsafe`: bad
+//! pointers or proofs can cause undefined behavior. The hidden supertrait
+//! [`__audited::AuditedMachine`] and the allow-list audit in
+//! `tests/config_surface.rs` pin the implementing types. Defaults never
+//! license raw access: the preludes default to the checked route.
 
 use gp64_types::{IoPort, PagedMemory};
 
@@ -33,8 +26,7 @@ pub mod __audited {
     pub unsafe trait AuditedMachine {}
 }
 
-/// Explicit, stable machine identity for DRC code domains and persisted
-/// profile manifests. Never a type or function address (LLD OQ8).
+/// Explicit, stable machine identity, independent of type or function addresses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MachineId(pub u32);
 
@@ -159,16 +151,15 @@ impl PagingState {
     }
 }
 
-/// The machine contract the x86 engines are generic over.
+/// The machine contract the interpreter is generic over.
 ///
 /// # Safety
 /// Implementing this trait asserts the full per-item contract of LLD
-/// 2026.10.02 §3.3: every proof and route an implementation returns satisfies
-/// LLD 1.4 V1-V6 and D2 for its stated intent, `core` returns the same
-/// embedded core for the machine's whole life, `CORE_OFFSET` is that core's
-/// byte offset in `Self` (generated code reads core words through it), and the access-policy
-/// refresh
-/// rules R-AP1-R-AP5 hold. The type must also be on the audit allow-list.
+/// 2026.10.02 §3.3: every proof and route satisfies LLD 1.4 V1-V6 and D2
+/// for its stated intent. `core` returns the same embedded core for the
+/// machine's whole life, `CORE_OFFSET` is its byte offset in `Self`, and
+/// access-policy refresh rules R-AP1-R-AP5 hold. The type must also be on
+/// the audit allow-list.
 pub unsafe trait X86Machine:
     PagedMemory + __audited::AuditedMachine + Sized + 'static
 {
@@ -197,9 +188,7 @@ pub unsafe trait X86Machine:
     /// The one embedded core. Hot.
     fn core(&self) -> &MemoryCore;
     /// Byte offset of the embedded core [`Self::core`] returns, from the
-    /// start of `Self`: generated code adds a `MemoryCore::*_OFFSET` to it
-    /// to read a core word off the frame's machine pointer (M3b.6 LLD §2.3).
-    /// No default: every machine states its own layout, as
+    /// start of `Self`. Every machine states its own layout using
     /// `core::mem::offset_of!(Self, core)`.
     const CORE_OFFSET: usize;
 
@@ -210,10 +199,9 @@ pub unsafe trait X86Machine:
     /// `ArchPhys -> GuestPhys`, a pure function of the policy. Hot.
     fn phys_mask(p: Self::AccessPolicy, a: ArchPhys) -> GuestPhys;
     /// `ArchPhys -> GuestPhys` under the live machine state: what
-    /// [`Self::phys_mask`] computes under a policy captured now. For a caller
-    /// with no captured policy in scope (the DRC's fetch and key derivation).
-    /// Hot. A machine whose policy capture has side effects or cost overrides
-    /// it with the bare mask (PC: the A20 mask).
+    /// [`Self::phys_mask`] computes under a policy captured now.
+    /// Machines may override this to avoid the cost or side effects of policy
+    /// capture (PC uses the bare A20 mask).
     #[inline(always)]
     fn mask_phys(&self, a: ArchPhys) -> GuestPhys {
         Self::phys_mask(self.access_policy(), a)
@@ -282,10 +270,9 @@ pub unsafe trait X86Machine:
     fn direct_span(&self, a: GuestPhys, len: usize, intent: AccessIntent) -> Option<DirectSpan>;
     /// Byte-exact guest fetch with every side effect a fetch has. Cold.
     fn fetch_checked(&self, a: GuestPhys, dst: &mut [u8]);
-    /// The host base of the machine's RAM backing, for the DRC frame. The
-    /// pointer proves nothing by itself; every guest-visible access through
-    /// it needs a `direct_span` or TLB direct proof first. Default: the
-    /// core's published RAM base.
+    /// Host base of the machine's RAM backing. The pointer proves nothing by
+    /// itself: every guest-visible access needs a `direct_span` or TLB direct
+    /// proof first. Defaults to the core's published RAM base.
     #[inline]
     fn ram_base(&self) -> *const u8 {
         self.core().ram_base_ptr().cast_const()
@@ -324,7 +311,7 @@ pub unsafe trait X86Machine:
     fn set_page_watched(&mut self, page: BackingPage, on: bool);
     /// The SMC/PT-tripwire/decode-cache core duty before a store lands.
     fn smc_before_write(&mut self, a: GuestPhys, len: usize) -> bool;
-    /// The V6 duties for a DRC raw commit.
+    /// Record the side effects of a direct RAM write.
     fn note_direct_write(&mut self, a: GuestPhys, len: usize);
     /// The PT-write tripwire for a store the caller commits itself: bump
     /// the PT-write epoch when `[a, a + len)` touches a recorded
@@ -448,7 +435,7 @@ pub unsafe trait X86Machine:
     /// True iff a linear-to-physical mapping is registered, so
     /// `PagedMemory::map_linear_physical` may answer `Some` and an unpaged
     /// translation need not be page-uniform. Read only when `DPMI_MAPPINGS`.
-    /// Hot (DRC fetch). Default: none.
+    /// Default: none.
     #[inline]
     fn has_linear_physical_mappings(&self) -> bool {
         false

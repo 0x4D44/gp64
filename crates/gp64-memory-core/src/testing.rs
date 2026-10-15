@@ -13,9 +13,8 @@
 //! `raw_ram_span` withhold the armed views, and every guest access that
 //! reaches an armed page through the checked route is logged once per
 //! access as an [`ArmedAccess`]. A store that reaches an armed page by any
-//! other route is missing from the log. The DRC store-helper proof (LLD
-//! 2026.10.08 M3b.6, §6.5) drives every store helper at an armed page and
-//! asserts exactly one logged write per guest store.
+//! other route is missing from the log, allowing tests to check that every
+//! guest store takes the checked route exactly once.
 
 use std::cell::RefCell;
 

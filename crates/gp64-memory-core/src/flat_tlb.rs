@@ -1,30 +1,17 @@
 //! Flat, direct-mapped, biased-pointer translation projection.
 //!
-//! This is a **derived projection** of the authoritative hashed [`SoftwareTlb`],
-//! not a second translation authority: it never walks a page table, never
-//! decides a permission, and is never read by Rust to answer a translation
-//! query. It is a decompressed cache of decisions the authoritative table
-//! already made, shaped so that emitted dyncore code can probe a translation in
-//! ~9 host instructions instead of ~30.
+//! This is a derived projection of the authoritative hashed [`SoftwareTlb`].
+//! It never walks a page table or decides a permission; Rust translation
+//! queries use the hashed table.
 //!
-//! Translation projection layout:
+//! Each view has one `u64` per 20-bit linear page, indexed by `linear >> 12`.
+//! Zero means miss, denied permission, MMIO/VGA, ROM protection, not-dirty,
+//! or a watched write page. Nonzero entries hold
+//! `host_page_base - (linear_page << 12)`, so adding a linear byte address
+//! recovers its host address. Supervisor and user permissions have separate
+//! read/write views, evaluated at fill time.
 //!
-//! * **Flat and direct-mapped** — one `u64` per 20-bit linear page, indexed by
-//!   `linear >> 12`. No hash, therefore no tag, therefore no tag compare.
-//! * **Permission folded into nullity** — `0` means "take the slow path" for
-//!   every reason at once: miss, no permission, MMIO/VGA, ROM-protected,
-//!   not-dirty, or (write views) SMC-watched.
-//! * **Biased pointers** — a nonzero entry holds
-//!   `host_page_base - (linear_page << 12)`, so `entry + raw_linear` is the host
-//!   address of the accessed byte. That deletes the in-page mask and lets the
-//!   final address form inside the load's own addressing mode.
-//! * **CPL-split** — four views (R0/W0/R3/W3) so the USER permission is
-//!   evaluated once at fill time rather than on every probe. Legal because CPL
-//!   is constant across a native chain (every CPL-changing shape is unadmitted).
-//!
-//! Layout is one contiguous heap block in this order, so the W view is a fixed
-//! `disp32` from the R view in both CPL states and one pinned register serves
-//! all four:
+//! The views occupy one contiguous heap block:
 //!
 //! ```text
 //! offset 0x0000_0000  R0  supervisor read view
@@ -33,10 +20,9 @@
 //! offset 0x0180_0000  W3  user write view
 //! ```
 //!
-//! Coherence is maintained by exactly the three mutators of the hashed table
-//! (`insert` / `invalidate_page` / `flush`) plus `set_page_watched`; see the
-//! `SoftwareTlb` methods in `lib.rs`. The [`SoftwareTlb::oracle_check_projection`]
-//! family verifies that invariant is actually held.
+//! The hashed table's `insert`, `invalidate_page`, `flush`, and page-watch
+//! mutators maintain coherence. [`SoftwareTlb::oracle_check_projection`]
+//! and its peers verify the invariant.
 
 /// Number of 20-bit linear pages: one entry per page in a 4 GiB linear space.
 pub const FLAT_PAGE_COUNT: usize = 1 << 20;
@@ -51,14 +37,9 @@ pub const FLAT_VIEW_R3_BYTE_OFFSET: usize = 0x0100_0000;
 pub const FLAT_VIEW_W3_BYTE_OFFSET: usize = 0x0180_0000;
 
 /// Distance from a read view to its matching write view, in bytes.
-///
-/// Emitted probes rely on this being a single `disp32` addend that is identical
-/// for both CPL states: `[r15 + page*8]` reads, `[r15 + page*8 + this]` writes.
 pub const FLAT_VIEW_WRITE_DELTA: usize = FLAT_VIEW_W0_BYTE_OFFSET;
 
 /// Distance from the supervisor view pair to the user view pair, in bytes.
-///
-/// `DynCore::run` adds this to the block base when publishing for CPL 3.
 pub const FLAT_VIEW_CPL3_DELTA: usize = FLAT_VIEW_R3_BYTE_OFFSET;
 
 /// Total number of `u64` slots across all four views.
@@ -96,9 +77,8 @@ pub fn bias(host_page_base: *const u8, linear_page: u32) -> u64 {
 pub struct FlatTlbViews {
     /// `FLAT_SLOT_COUNT` entries: R0, W0, R3, W3 back to back.
     slots: Box<[u64]>,
-    /// One bit per physical page: "the dyncore holds compiled code on this page".
-    /// A set bit nulls that page's write views, folding the SMC fast-path
-    /// predicate into write-view nullity.
+    /// One watch bit per physical page. A set bit nulls the page's write
+    /// views so writes must take the checked path.
     watched: Box<[u64]>,
     /// One bit per physical page: "a hardware page walk read a paging-structure
     /// entry (PDE/PTE) from this frame" — the EXP-N005 link-keep tripwire's
@@ -179,20 +159,17 @@ impl FlatTlbViews {
         self.watch_page_count
     }
 
-    /// Base address of the view block, for publication into `Cpu::jit_tlb_view`.
-    ///
-    /// Stable for the whole `Memory` lifetime: the block is allocated once and
-    /// never reallocated.
+    /// Base address of the view block, stable for the whole `Memory`
+    /// lifetime: the block is allocated once and never reallocated.
     #[inline]
     pub fn base_ptr(&self) -> *const u64 {
         self.slots.as_ptr()
     }
 
-    /// Is this physical page watched (i.e. does the dyncore hold code on it)?
+    /// Is this physical page watched?
     ///
-    /// Out-of-range pages read as unwatched; a page that can be written through
-    /// the fast path is always in range (see the fill-time assert in
-    /// `SoftwareTlb::insert`).
+    /// Out-of-range pages read as unwatched; pages writable through the fast
+    /// path are always in range (see the fill-time assert in `SoftwareTlb::insert`).
     #[inline]
     pub fn is_watched(&self, physical_page: u32) -> bool {
         let p = physical_page as usize;
@@ -202,20 +179,13 @@ impl FlatTlbViews {
         self.watched[p >> 6] & (1u64 << (p & 63)) != 0
     }
 
-    /// Could ANY physical page in the inclusive range `[first_page, last_page]`
-    /// hold dyncore-compiled code?
+    /// Could any physical page in the inclusive range `[first_page, last_page]`
+    /// be watched? `Memory::smc_before_write` uses this to skip the SMC snoop
+    /// on unwatched pages, including writes that do not read a flat view.
     ///
-    /// This is the **write-side peer of the watch fold**. `is_watched` already
-    /// nulls a watched page's write views so the dyncore's own emitted stores
-    /// leave the fast path; this answers the same question for the write
-    /// channels that do *not* read a view — the interpreter's fall-back stores
-    /// and every `Memory::write_*` caller — so `Memory::smc_before_write` can
-    /// skip the SMC snoop entirely on pages that do not host cached code.
-    ///
-    /// Conservative in the one direction that matters: pages OUTSIDE the
-    /// bitmap answer `true`, because `set_watched` silently ignores an
-    /// out-of-range page, so "not watched" there is "unknown", not "proven
-    /// clean". An empty range (`first_page > last_page`) answers `false`.
+    /// Conservative outside the bitmap: `set_watched` ignores out-of-range
+    /// pages, so an absent bit there means unknown and answers true.
+    /// An empty range (`first_page > last_page`) answers false.
     #[inline]
     #[must_use]
     pub fn span_may_hold_code(&self, first_page: usize, last_page: usize) -> bool {
@@ -384,27 +354,13 @@ impl FlatTlbViews {
         self.slots[W3 + p] = if user { w } else { 0 };
     }
 
-    /// Null all four views for a page. Idempotent in its slot effect, and
-    /// correct even for a page that was collision-evicted from the hashed
-    /// table.
+    /// Null all four views for a page, including pages collision-evicted
+    /// from the hashed table. Idempotent in its slot effect.
     ///
-    /// The epoch bump is **unconditional**, matching `publish` and
-    /// `publish_write_only` (MDD-BUG-FLUX-00086). It used to fire only when a
-    /// slot had been nonzero, on the reasoning that nulling an already-null
-    /// page changes nothing observable. That is true of the *projection* and
-    /// false of the *translation*: a code page can legitimately sit at all-zero
-    /// slots (SMC-watched W, firmware-filtered or bias-zero-collision R), and
-    /// nulling it is how an INVLPG or a CR3 flush announces that its mapping is
-    /// gone. Consumers read this epoch to decide whether a translation may have
-    /// changed — the drc native chain link records it at patch time and
-    /// re-checks it on traversal — so a silent null let a PTE rewrite remap the
-    /// same linear EIP to different physical code while the link still matched,
-    /// and the guest jumped to the stale physical successor.
-    ///
-    /// The cost is a counter increment plus, at most, a refused chain link that
-    /// falls back to ordinary dispatch and re-links. It is not block
-    /// invalidation, and it cannot be worse than the churn `publish` already
-    /// causes on every warm.
+    /// The epoch bump is unconditional, matching `publish` and
+    /// `publish_write_only` (MDD-BUG-FLUX-00086). Already-null slots can
+    /// represent a valid translation with watched writes or filtered reads.
+    /// INVLPG and CR3 flushes must announce its removal even in that case.
     #[inline]
     pub fn null_page(&mut self, linear_page: u32) {
         let p = linear_page as usize;
@@ -461,10 +417,8 @@ impl FlatTlbViews {
         self.mutation_epoch
     }
 
-    /// Stable pointer to the epoch counter, valid while `self` does not move.
-    /// A native engine may capture it for one synchronous engine entry so
-    /// generated code can compare the live epoch without a helper call; it
-    /// must recapture on every entry (Memory can be replaced between entries).
+    /// Pointer to the epoch counter, valid while `self` stays alive and
+    /// does not move.
     #[inline]
     pub fn mutation_epoch_ptr(&self) -> *const u64 {
         core::ptr::addr_of!(self.mutation_epoch)
@@ -520,7 +474,7 @@ pub enum FlatNullCause {
     /// Write to RAM whose host write pointer is withheld (BIOS ROM segment,
     /// descriptor-table snoop hull).
     WriteWithheld,
-    /// Write to a physical page holding compiled code (SMC watch).
+    /// Write to a watched physical page (SMC watch).
     WriteCodeWatched,
     /// Write to a recorded paging-structure frame (EXP-N005 divert).
     WritePtFrame,
@@ -794,14 +748,9 @@ mod tests {
         }
     }
 
-    /// MDD-BUG-FLUX-00086: nulling a page whose four slots are ALREADY zero
-    /// must still move the epoch. Such a page is not "unmapped and boring" — a
-    /// code page sits at all-zero slots whenever its writes are SMC-watched or
-    /// its read bias collides with zero, and the null is how an INVLPG or CR3
-    /// flush announces the mapping is gone. Consumers (the drc native chain
-    /// link) read this epoch to decide whether a translation may have changed;
-    /// a silent null lets them keep a link across a PTE rewrite and jump to
-    /// stale physical code.
+    /// MDD-BUG-FLUX-00086: nulling an already-zero page must still move the
+    /// epoch. Zero slots can represent watched writes or a zero read bias;
+    /// INVLPG and CR3 flushes must still announce the mapping's removal.
     #[test]
     fn nulling_an_already_null_page_still_moves_the_epoch() {
         let mut v = FlatTlbViews::new(32768);

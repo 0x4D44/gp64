@@ -724,9 +724,8 @@ fn expand_ram_is_idempotent_if_not_larger() {
 
 #[test]
 fn smc_watch_bitmap_covers_expanded_ram() {
-    // MDD-BUG-FLUXHOMEARPA-00022: pages committed above DOS_RAM_CEILING by
-    // expand_ram must be coverable by the SMC watch bitmap, so
-    // dynrec SMC snooping stays armed for guest code up there.
+    // MDD-BUG-FLUXHOMEARPA-00022: RAM above DOS_RAM_CEILING must remain
+    // coverable by the SMC watch bitmap after `expand_ram`.
     let mut mem = Memory::new();
     mem.expand_ram(DOS_RAM_CEILING + 64 * 1024 * 1024); // 320 MiB
     let addr = DOS_RAM_CEILING + 44 * 1024 * 1024; // ~300 MiB

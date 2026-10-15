@@ -1,55 +1,19 @@
-//! Independent x87 adjudicators for the native compiled x87 DH port.
+//! Independent x87 primitive oracles.
 //!
-//! # Why this exists
+//! These compare host x87 instructions in `x87_ops` with the independent
+//! `rustc_apfloat::X87DoubleExtended` implementation in `x87_soft`.
+//! Neither path uses `fpu.rs` to compute its answers.
 //!
-//! Every x87 test the project owns uses **our own interpreter** as the oracle:
-//! the DH form semantics were written in terms of "the interpreter leaf", not
-//! the SDM. `cpu::fpu_reference_diff` is blessed from our own emulator.
-//! So a red x87 differential carries **zero** information about
-//! which side is right, and the DH port would generate divergences we could not
-//! adjudicate.
+//! The comparison covers F80 values and arithmetic exception flags
+//! (IE/DE/ZE/OE/UE/PE, plus C1 for rounding) for bit-exact primitives.
+//! It does not adjudicate interpreter bookkeeping such as TOP, tags,
+//! stack faults, condition codes or exception sequencing. Transcendentals
+//! are excluded because the soft backend deliberately approximates them
+//! in f64. Agreement also cannot rule out a shared error.
 //!
-//! This module stands up two adjudicators that owe the interpreter nothing:
-//!
-//! 1. **Host silicon** — `crate::x87_ops` on x86_64 is inline `asm!` driving the
-//!    real host x87 unit. Its only non-`core` dependency is
-//!    `crate::cpu::host_x87_enter`, which is the DH residency *tripwire* (it
-//!    aborts if generated code owns the FPU); it computes nothing.
-//! 2. **`x87_soft`** — 1,498 lines of `rustc_apfloat` `X87DoubleExtended`, whose
-//!    in-memory encoding is byte-identical to Intel 80-bit. It is our production
-//!    FPU on non-x86_64 and has, until now, been **compared against nothing**.
-//!    It has no `use crate::` at all.
-//!
-//! Neither path reads `fpu.rs`. That independence is the whole point: an oracle
-//! that secretly consults the thing it is meant to adjudicate is worse than no
-//! oracle, because it manufactures false agreement.
-//!
-//! # What this pair CAN adjudicate
-//!
-//! The **value** (the 80 mantissa/exponent bits) and the **arithmetic exception
-//! flags** (IE/DE/ZE/OE/UE/PE, and C1-as-round-up) of a single primitive
-//! operation, for the ops both backends claim to compute bit-exactly.
-//!
-//! # What this pair CANNOT adjudicate — do not overclaim it
-//!
-//! - **Anything `fpu.rs` layers on top**: TOP, the tag word, stack fault/SF, the
-//!   C0/C2/C3 condition codes, exception *sequencing*, and which flags survive an
-//!   instruction boundary. Those live in the interpreter and need the guest-level
-//!   an independent guest-level differential (the other half of S0b).
-//! - **The transcendentals** (`f80_sin/cos/sincos/ptan/patan/yl2x/yl2xp1/f2xm1`).
-//!   `x87_soft` computes them in `f64` and its own header declares them
-//!   "approximate, not bit-exact" *by design*. Comparing them here would generate
-//!   known noise, so they are out of scope — that is a documented property of the
-//!   soft backend, **not** an exclusion bought to make this file go green.
-//! - **Any case where both backends are wrong together.** Two adjudicators can
-//!   agree and both be wrong; that is why HLD §5 wants four.
-//!
-//! # Reading a disagreement
-//!
-//! A disagreement here is a **finding about `x87_soft`, host silicon, or both** —
-//! never about the interpreter directly. Since `x87_soft` is our production FPU
-//! on aarch64, a value-class disagreement is a live cross-platform correctness
-//! bug and should be filed in `bugs/`, not silenced.
+//! A disagreement concerns `x87_soft`, host silicon, or both. Since the
+//! soft backend runs in production on AArch64, value disagreements can
+//! identify live cross-platform correctness bugs.
 
 use crate::x87_ops as host;
 use crate::x87_soft_test as soft;

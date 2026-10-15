@@ -1,9 +1,7 @@
 //! Model-Specific Register (MSR) read/write semantics.
 //!
 //! Implements the minimum Pentium-class MSR set the emulator currently
-//! exposes. Both the interpreter and (in future) the JIT route their
-//! `RDMSR` / `WRMSR` decode through this module so the two engines cannot
-//! drift on MSR semantics.
+//! exposes. The interpreter routes `RDMSR` / `WRMSR` through this module.
 //!
 //! # Strict vs lenient mode
 //!

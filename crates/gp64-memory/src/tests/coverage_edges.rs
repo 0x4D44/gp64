@@ -720,16 +720,9 @@ fn test_paged_memory_trait_invalidate_page() {
     assert!(<Memory as PagedMemory>::tlb_lookup(&mem, 0x70).is_none());
 }
 
-/// MDD-BUG-FLUX-00086, stated where the guest actually reaches it: an
-/// INVLPG against a page the flat projection never published must still
-/// move `flat_mutation_epoch`.
-///
-/// That epoch is the drc native chain link's whole validity signal — the
-/// link records it at patch time and re-checks it on traversal. A cold code
-/// page legitimately sits at all-zero flat slots, so if its INVLPG were
-/// silent, a PTE rewrite could remap the same linear EIP to different
-/// physical code while the link still matched, and the guest would jump to
-/// the stale physical successor.
+/// MDD-BUG-FLUX-00086: INVLPG must move `flat_mutation_epoch` even for
+/// a page with no published flat slots. Zero slots do not prove that
+/// the page has no translation to invalidate.
 #[test]
 fn invalidating_a_never_published_page_moves_the_flat_mutation_epoch() {
     let mut mem = Memory::new();
@@ -898,7 +891,7 @@ fn test_map_linear_physical_no_mappings() {
     assert!(mem.map_linear_physical(0x100_000).is_none());
 }
 
-// ========== JIT write methods ==========
+// ========== Writes without SMC tracking ==========
 
 #[test]
 fn test_write_u8_jit_basic() {
@@ -907,7 +900,7 @@ fn test_write_u8_jit_basic() {
     assert_eq!(mem.read_u8(0x8000), 0xAB);
 }
 
-// ========== JIT write tracking ==========
+// ========== Write tracking without SMC notification ==========
 
 #[test]
 fn test_write_u8_jit_with_tracking() {

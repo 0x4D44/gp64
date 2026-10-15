@@ -662,9 +662,9 @@ fn raw_ram_span_is_fetch_proof_with_a20_continuity() {
     assert!(raw_count > 0, "the grid must include plain RAM spans");
 }
 
-/// The DRC fetch path's `direct_span(Fetch)` (M3b.0 S2) is exactly the
-/// direct-host range it replaced, pointer included, with the additional A20
-/// continuity requirement. Fetch applies no read or write withhold.
+/// `direct_span(Fetch)` matches the direct-host range, pointer included,
+/// with an additional A20 continuity requirement. Fetch applies neither
+/// read nor write withholding.
 #[test]
 fn pc_fetch_direct_span_is_the_direct_host_range() {
     let scenarios: [Scenario; 6] = [
@@ -759,10 +759,9 @@ fn pc_smc_items_match_the_inherent_binding() {
     assert!(!mem.core().has_smc_notifier());
 }
 
-/// The M3b.0 S5a items match the inherent methods the DRC called before:
-/// `ram_base` is `ram_ptr`, and the PC's `tlb_direct_read_ptr` keeps the
-/// firmware MP-table filter's global refusal on a page the core's predicate
-/// alone would admit.
+/// Trait methods match their inherent counterparts: `ram_base` is
+/// `ram_ptr`, and the PC's `tlb_direct_read_ptr` retains the firmware
+/// filter's refusal even where the core predicate alone admits a page.
 #[test]
 fn pc_ram_base_and_direct_read_items_match_the_inherent_methods() {
     let mut mem = Memory::new();

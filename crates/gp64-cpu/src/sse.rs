@@ -1,8 +1,8 @@
 //! Architectural SSE state.
 //!
 //! This module deliberately contains only persistent XMM/MXCSR state. Decode
-//! and execution live in sibling modules so snapshots and native-engine offsets
-//! do not depend on semantic implementation details.
+//! and execution live in sibling modules so the state representation does not
+//! depend on semantic implementation details.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -29,10 +29,9 @@ pub enum SseRounding {
 
 /// The eight architectural XMM registers and their control state.
 ///
-/// `u128` keeps each register bit-exact and gives native-engine code a single
-/// 16-byte home. The custom serde representation uses two little-endian u64
-/// halves because the repository's JSON save-state paths cannot represent an
-/// arbitrary u128 in `serde_json::Value`.
+/// `u128` keeps each register bit-exact. The custom serde representation uses
+/// two little-endian u64 halves because `serde_json::Value` cannot represent
+/// an arbitrary u128.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SseState {

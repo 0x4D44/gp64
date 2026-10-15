@@ -906,14 +906,9 @@ fn snoop_hull_fast_out_preserves_per_table_dirty_semantics() {
     assert!(mem.take_gdt_dirty());
 }
 
-/// MDD-BUG-FLUX-00152 — a page overlapping the GDT/LDT snoop hull must not
-/// carry a `host_write` pointer.
-///
-/// Every write fast path built on published `host_write` (the interpreter's
-/// warm-TLB store arms, the drc's `tlb_direct_write_ptr` commit leg) stores
-/// straight to guest RAM without calling `snoop_gdt_write_ext`. A published
-/// pointer here therefore means a descriptor edit that never marks the table
-/// dirty.
+/// MDD-BUG-FLUX-00152: a page overlapping the GDT/LDT snoop hull must
+/// not carry a `host_write` pointer. Direct stores bypass the snoop,
+/// so descriptor edits would leave the table marked clean.
 #[test]
 fn a_page_overlapping_the_descriptor_snoop_hull_publishes_no_host_write() {
     let mut mem = Memory::new();

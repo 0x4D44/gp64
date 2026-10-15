@@ -554,7 +554,7 @@ pub enum TapeOutcome {
 /// AtomicU64 so the tape cursor can stay behind a shared mutable
 /// borrow without forcing the surrounding emulator state to take
 /// extra `&mut` chains. gp64 is single-threaded for guest code
-/// (interpreter / JIT both run on the emulator thread), so the
+/// (the interpreter runs on the emulator thread), so the
 /// counters never see contention; the atomics are purely for the
 /// memcell-aliasing-rules property, free on x86.
 #[derive(Debug, Default)]

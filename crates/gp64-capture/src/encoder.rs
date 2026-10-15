@@ -1966,31 +1966,15 @@ mod tests {
         assert_eq!(capture_scale_factor(0), 1);
     }
 
-    /// Capture containment pin (full-DBX x87 residency posture HLD
-    /// 2026.08.01 §3.1 / panel lens 2 finding 1, landed in U4): the encoder
-    /// must NEVER execute on the thread that drives capture — under the
-    /// posture, the emulator thread can hold guest x87 state resident right
-    /// up to the dyncore root exit, so anything touching the x87/MMX register
-    /// file there corrupts the guest.
-    ///
-    /// The switch from openh264 to rvp9 (2026.08.15) retired the concrete
-    /// hazard that motivated this pin: openh264 shipped assembled MMX/EMMS
-    /// kernels that alias the x87 register file, whereas rvp9 is pure Rust
-    /// whose only hand-written SIMD is SSE2/AVX2 (xmm/ymm — architecturally
-    /// disjoint from x87) and which deliberately has no
-    /// `vpx_clear_system_state` equivalent because it never enters MMX state.
-    /// The containment stays pinned anyway: it is the structural property we
-    /// rely on, and it must survive whatever the encoder crate does next.
+    /// Encoding stays on the dedicated worker thread, keeping encoder work
+    /// off the emulator thread.
     ///
     /// Both halves are pinned:
-    /// - RUNTIME: `CaptureSession::start` spawns the dedicated named
-    ///   "capture-encoder" thread with a distinct `ThreadId`, and a real
-    ///   frame round-trips into a finalised non-empty file THROUGH that
-    ///   thread, while the caller-side API (`submit_frame`/`submit_audio`)
-    ///   only clones buffers into channels;
-    /// - SOURCE: every reference to the encoder crate in this crate lives in
-    ///   THIS file, whose encode entry points are reachable only from
-    ///   `encoder_thread` — the closure `start` hands to the spawn.
+    /// - Runtime: `CaptureSession::start` spawns a distinct thread, and a real
+    ///   frame round-trips through it into a finalized non-empty file.
+    ///   Caller-side submission only copies buffers into channels.
+    /// - Source: encoder-crate references stay in this file, with encoding
+    ///   entry points reachable only from `encoder_thread`.
     #[test]
     fn encoding_is_confined_to_the_dedicated_encoder_thread() {
         // SOURCE half: the encoder crate must not leak into any other module,

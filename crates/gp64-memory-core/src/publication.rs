@@ -11,8 +11,7 @@
 //! 3. revoke: the hashed TLB and its flat views, the direct-proof latch;
 //!    collect the pending bumps without applying any;
 //! 4. sever: hand the revoked linear pages to [`MemoryCore`]'s sever stage
-//!    (amendment A-M5-10: a no-op until the DRC exit-link pending set lands;
-//!    its position is pinned by the counter test);
+//!    (currently a no-op whose position is pinned by the counter test);
 //! 5. the pending bumps: per-page generation words, then the proof, source,
 //!    descriptor and PT-write words once each;
 //! 6. the epoch set for the [`KindSet`], once;
@@ -169,12 +168,11 @@ pub struct Publication<'a> {
 }
 
 impl MemoryCore {
-    /// Enter an engine run.
+    /// Enter an interpreter run.
     ///
-    /// Take it **once per engine run entry** (the interpreter's `run_ext*`
-    /// entry, the DRC root entry), never per block hop, per link or per
-    /// instruction: the guard is an `Arc` clone plus a depth increment, an
-    /// atomic pair on entry and another on drop.
+    /// Take this once per `run_ext*` entry, never per instruction. The guard
+    /// clones an `Arc` and increments a depth counter, with atomics on both
+    /// entry and drop.
     ///
     /// # Panics
     /// If the core is poisoned by an unwound publication.
@@ -310,10 +308,8 @@ impl MemoryCore {
         revoked
     }
 
-    /// Sever delivery for the revoked linear pages (A-M5-8, erratum A-M5-10).
-    /// The core has no exit-link pending set yet: when the DRC exit-link HLD
-    /// lands, this records each page into it. The publication runs at engine
-    /// depth 0, so recording there is deferred delivery.
+    /// Sever stage for revoked linear pages. Currently a no-op; publication
+    /// runs at engine depth zero.
     fn deliver_severs(&self, _revoked: &[u32]) {}
 
     /// Mark `table` dirty and bump the descriptor generation: what `snoop_descriptor_write` does on

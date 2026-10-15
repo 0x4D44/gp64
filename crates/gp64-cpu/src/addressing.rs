@@ -397,13 +397,9 @@ fn resolve_operand_ea(cpu: &Cpu, instr: &Instruction) -> (ResolvedSegment, u16, 
     }
     let mut addr: u32 = 0;
 
-    // Base register.
-    //
-    // Per Intel SDM Vol 2A Table 2-3, when the SIB index field = 100b there is no
-    // index register and the scale bits are ignored: the effective address is just
-    // `[base + disp]`. Real 386/486/Pentium hardware behaves this way. An earlier
-    // "386 hardware quirk" that multiplied the base by scale in the no-index case
-    // was mythical — see wrk_docs/jit_fuzz_fix_c1_sib_scale_quirk.md.
+    // Base register. With SIB index=100b there is no index register, and
+    // scale is ignored: the effective address is `[base + disp]`
+    // (Intel SDM Vol 2A Table 2-3). This also holds on 386/486/Pentium.
     if instr.memory_base() != Register::None {
         let base = read_register(cpu, instr.memory_base()) as u32;
         addr = addr.wrapping_add(base);

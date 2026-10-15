@@ -760,11 +760,9 @@ pub enum VgaWriteHandler {
     Planar,
 }
 
-/// How an admitted VGA aperture store commits natively, cached for the dyncore
-/// `smc_store` fast path (EXP-033 Stage 1). `Some(kind)` means the current VGA state
-/// admits a native aperture commit for EVERY Map-Mask and EVERY aperture address —
-/// i.e. it is plane_mask- and address-INDEPENDENT — so the fast path can skip the
-/// per-store predicate re-derivation. Recomputed in `update_vga_write_handler`.
+/// How an admitted VGA aperture store commits directly. `Some(kind)` means
+/// every Map Mask and aperture address is admitted under the current VGA
+/// state. Recomputed in `update_vga_write_handler`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VgaCommitKind {
     /// Plain chain-4 Mode 13h: `commit_vga_chain4_plain_byte`.
@@ -1165,11 +1163,10 @@ pub struct MmioRegion {
 struct ArenaProcessState {
     /// Last shared arena PTE generation observed by this process.
     pte_generation_seen: u64,
-    /// Cross-process SMC for the shared flat-memory arena, kept at the process
-    /// seam, outside either native engine's SMC design. The session state and
-    /// this process's PID, while this `Memory` is mounted.
+    /// Cross-process SMC for the shared flat-memory arena: session state
+    /// and this process's PID while `Memory` is mounted.
     smc: Option<(u32, Arc<Mutex<arena_smc::ArenaSmc>>)>,
-    /// Arena pages this process's DBX/DRC cache watches.
+    /// Arena pages watched by this process.
     local_watches: std::collections::BTreeSet<u32>,
     /// Arena pages the (legacy) interpreter decoded from.
     instr_watches: std::collections::BTreeSet<u32>,
@@ -1221,9 +1218,8 @@ pub struct Memory {
     /// Pre-computed VGA write dispatch handler, derived from video mode and chain4.
     /// Updated at mode-change time by `update_vga_write_handler()`.
     vga_write_handler: VgaWriteHandler,
-    /// Cached plane_mask- and address-independent VGA native-commit admission for the
-    /// dyncore `smc_store` fast path (EXP-033 Stage 1). Recomputed alongside
-    /// `vga_write_handler` in `update_vga_write_handler()`; `None` = not admitted.
+    /// Cached plane-mask- and address-independent VGA commit admission.
+    /// Recomputed with `vga_write_handler`; `None` means not admitted.
     vga_native_commit: Option<VgaCommitKind>,
 
     // EGA/VGA Graphics Controller state for proper planar operations
@@ -1280,13 +1276,10 @@ pub struct Memory {
     physical_mappings: FixedVec<PhysicalMapping, 64>,
     /// Video memory write counter for watchdog tracking
     video_write_count: std::sync::atomic::AtomicU64,
-    /// VGA writes committed by NATIVE routes: the `commit_vga_*_plain_byte`
-    /// helpers, plus counts folded in from the emitted inline corridor.
-    ///
-    /// Kept separate from `video_write_count` and deliberately NOT atomic:
-    /// every native writer already holds `&mut Memory`, so a plain increment
-    /// is correct and costs nothing in the hot path — which is what the bug
-    /// asked for (MDD-BUG-CRUCIBLE-00150).
+    /// VGA bytes committed through direct helpers or recorded in bulk.
+    /// Kept separate from the interpreter's atomic `video_write_count`.
+    /// Writers hold `&mut Memory`, so this counter needs no atomics
+    /// (MDD-BUG-CRUCIBLE-00150).
     native_video_writes: u64,
     /// Byte transactions committed through the legacy VGA aperture. Unlike
     /// the watchdog counter this excludes linear framebuffers and is plain
@@ -1369,7 +1362,7 @@ pub struct Memory {
 
     /// Debug-only flag to detect missing VGA pipeline syncs.
     ///
-    /// Set to `true` by callers (BIOS, JIT, emulator init) after VGA register
+    /// Set to `true` by callers (BIOS or emulator init) after VGA register
     /// changes that require `apply_vga_pipeline()`.  Cleared inside
     /// `apply_vga_pipeline()`.  A `debug_assert!` in `write_planar_ega_masked`
     /// fires if a planar VRAM write occurs while this flag is still set,
@@ -1717,8 +1710,8 @@ impl Memory {
         self.ram.len() - FETCH_PADDING
     }
 
-    /// Bytes of raw RAM generated code may read directly at a physical
-    /// address (`MemoryCore::raw_ram_limit`); 0 means never inline.
+    /// Bytes of RAM available for direct physical reads
+    /// (`MemoryCore::raw_ram_limit`); zero means none.
     #[must_use]
     pub fn raw_ram_limit(&self) -> usize {
         self.core.raw_ram_limit()
@@ -1740,24 +1733,17 @@ impl Memory {
         self.core.memory_policy_epoch()
     }
 
-    /// Current direct-memory epoch.
-    ///
-    /// The dynrec engine uses this to reject compiled direct-memory assumptions
-    /// after memory mapping, source policy, ROM/MMIO/VGA routing, A20, or
-    /// backing RAM size/pointer changes. TLB-only invalidations deliberately do
-    /// not advance this epoch; paged code-fetch reuse must validate the current
-    /// translated code page before running cached native blocks.
+    /// Current direct-memory epoch. Changes on memory mapping, source
+    /// policy, ROM/MMIO/VGA routing, A20, or backing RAM size/pointer changes.
+    /// TLB-only invalidations deliberately do not advance it.
     #[inline]
     pub fn direct_memory_policy_epoch(&self) -> u64 {
         self.core.direct_memory_policy_epoch()
     }
 
-    /// Current dynrec translation epoch.
-    ///
-    /// This advances on TLB-wide or single-page invalidation, CR3/paging policy
-    /// churn routed through memory, A20 changes, and DPMI direct-mapping churn.
-    /// It is intentionally narrower than [`Self::memory_policy_epoch`] so
-    /// non-translation memory policy changes do not poison source-code identity.
+    /// Current translation epoch. Advances on TLB invalidation, CR3/paging
+    /// policy changes routed through memory, A20 changes, and DPMI mapping
+    /// changes. Narrower than [`Self::memory_policy_epoch`].
     #[inline]
     pub fn dynrec_translation_epoch(&self) -> u64 {
         self.core.dynrec_translation_epoch()
@@ -1769,7 +1755,7 @@ impl Memory {
         self.core.dynrec_global_tlb_flush_epoch()
     }
 
-    /// Current dynrec A20 generation.
+    /// Current A20 generation.
     #[inline]
     pub fn dynrec_a20_generation(&self) -> u64 {
         self.core.alias_generation()
@@ -1781,14 +1767,10 @@ impl Memory {
         self.mask_address(addr)
     }
 
-    // Every epoch bump below writes through to the stable `DirectGenerations`
-    // block (dynrec-direct WI-C1) in the same helper: the block words mirror
-    // the low 32 bits of the corresponding `u64` epoch, and every bump runs
-    // the WI-G1 guarded-page sweep (`stale_all_guarded_pages`), which
-    // advances word 0 (Rust-side diagnostic; no emitted readers) AND every
-    // guarded per-page generation word — the words emitted guards read. A
-    // missed write-through is a correctness bug — stale emitted proofs
-    // would survive the event.
+    // Every epoch bump writes through to the stable `DirectGenerations`
+    // block in the same helper, mirroring the low 32 bits of the `u64`
+    // epoch. The guarded-page sweep advances word zero and every guarded
+    // per-page generation word so stale proofs cannot survive the event.
 
     #[inline]
     fn bump_memory_policy_epoch(&mut self) {
@@ -1834,11 +1816,9 @@ impl Memory {
         self.core.flush_tlb_full()
     }
 
-    /// Set BIOS ROM write policy.
-    ///
-    /// Some legacy tests still write the public `allow_rom_writes` field
-    /// directly, but production callers must use this setter so JIT profile
-    /// invalidation sees the policy change.
+    /// Set BIOS ROM write policy. Production callers use this setter to
+    /// invalidate memory-policy proofs; some tests still write the public
+    /// `allow_rom_writes` field directly.
     #[inline]
     pub fn set_allow_rom_writes(&mut self, allow: bool) {
         if self.allow_rom_writes != allow {
@@ -1862,19 +1842,11 @@ impl Memory {
         self.core.bind_smc(notifier)
     }
 
-    /// Returns true if a SMC notifier is installed (JIT is active).
+    /// Returns true if an SMC notifier is installed.
     #[inline]
-    /// Whether the bound SMC notifier is holding an unconsumed write record.
-    ///
-    /// A native engine that steps a nested interpreter instruction asks this
-    /// after the step: a device reached by that instruction can write guest RAM
-    /// holding compiled code, and such a write is only SNOOP-RECORDED — the
-    /// invalidation lands later, at the engine root's drain. Without this the
-    /// native chain could continue into a block whose source was already
-    /// overwritten (MDD-BUG-FLUX-00146).
-    ///
-    /// Cheap and non-destructive: it does not drain, because draining is the
-    /// root's job and taking the record here would lose it.
+    /// Whether the bound SMC notifier has an unconsumed write record.
+    /// This query leaves the record available for draining
+    /// (MDD-BUG-FLUX-00146).
     pub fn smc_snoop_pending(&self) -> bool {
         self.core.smc_snoop_pending()
     }
@@ -1884,16 +1856,13 @@ impl Memory {
     }
 
     /// Remove and return the SMC notifier, if any.
-    /// Used by JIT verification to suppress SMC notifications during interpreter reference runs.
     pub fn take_smc_notifier(&mut self) -> Option<Arc<dyn SmcNotify>> {
         self.ram.set_hle_notifier(None);
         self.core.take_smc_notifier()
     }
 
-    /// Update the fast SMC guard. Call with `true` when an execution engine
-    /// may hold compiled code, `false` when no compiled blocks can exist.
-    /// This avoids a vtable dispatch through `smc_notifier` on every memory
-    /// write when no compiled blocks exist.
+    /// Update the fast SMC guard. Set true while code pages are watched
+    /// to enable notifier dispatch on writes; false skips that vtable call.
     #[inline]
     pub fn set_smc_has_code_pages(&mut self, has_pages: bool) {
         self.core.set_smc_has_code_pages(has_pages);
@@ -2093,9 +2062,9 @@ impl Memory {
     /// flat-memory guest processes keep private RAM, page tables, TLBs, direct-memory
     /// proofs, and instruction-cache state in separate [`Memory`] values while
     /// sharing one emulated machine. The process runner calls this only after
-    /// both memories are quiescent and the native engine has been unbound. The
-    /// CPU-side VGA plane pointer and any published translation/direct-memory
-    /// views MUST be republished after this call; this method deliberately
+    /// both memories are quiescent. Any cached VGA plane pointer and published
+    /// translation/direct-memory views must be refreshed after this call;
+    /// this method deliberately
     /// invalidates those derived assumptions.
     ///
     /// The VGA, EMS-frame, and ROM windows in `ram` are exchanged with the
@@ -2576,17 +2545,10 @@ impl Memory {
 
         self.hle_ems_frame_owned = true;
         self.clear_ems_frame_map();
-        // Claiming the frame flips `hle_ems_frame_owned`, which changes what
-        // `direct_host_ram_range` returns for 0xE0000..0xF0000 (raw RAM ->
-        // EMS-backed). Bump the direct-memory-policy epoch -- which internally
-        // flushes the TLB (so pre-claim entries carrying direct pointers into
-        // the frame are dropped) AND stales dynrec guarded pages -- so EVERY
-        // consumer keyed on that epoch is invalidated, not just TLB-based fast
-        // paths. A bare `flush_tlb_full()` would leave epoch-keyed proofs
-        // stale: (a) the interpreter's LOADIP whole-page fetch-proof cache, and
-        // (b) a dynrec direct-page proof published for a frame page BEFORE the
-        // claim (`publish_direct_page_proof` only refuses frame pages while
-        // *owned*). The claim fires once per boot, so the extra work is free.
+        // Claiming the EMS frame changes `direct_host_ram_range` from raw
+        // RAM to EMS backing. Bump the memory-policy epoch to flush cached
+        // TLB pointers and stale direct-page and interpreter fetch proofs.
+        // A bare TLB flush would leave those epoch-keyed proofs valid.
         self.bump_memory_policy_epoch();
         Ok(())
     }
@@ -2874,11 +2836,8 @@ impl Memory {
     /// [`Memory::commit_vga_chain4_plain_byte`]) with a byte-for-byte result
     /// identical to the interpreter's chain-4 write handler.
     ///
-    /// This is the dyncore native-commit admission gate for VGA stores (VGA
-    /// chain4 native-store fast-path HLD). It is DELIBERATELY separate from
-    /// [`Memory::direct_host_ram_range`] — which must keep rejecting the whole
-    /// VGA window so no dynrec block is ever source-cached from it — and is
-    /// tried only after the RAM check fails. It admits ONLY the "plain" pipeline
+    /// Separate from [`Memory::direct_host_ram_range`], which rejects the VGA
+    /// window. It admits only the plain pipeline
     /// state in which the dual-write reproduces the interpreter exactly:
     /// - the whole range lies inside the 64 KB `0xA0000` aperture;
     /// - the live CPU window maps that aperture (`memory_map_select & 3 ∈ {0,1}`;
@@ -2944,13 +2903,9 @@ impl Memory {
             && self.vga.bit_mask == 0xFF
     }
 
-    /// True when a dynrec engine may cache generated code sourced from this physical
-    /// range and rely on ordinary guest writes to notify the SMC tracker.
-    ///
-    /// This is narrower than "readable": VGA/video windows, enabled LFB,
-    /// bytes through `read_u8`, but their write paths may bypass
-    /// `smc_before_write`. Dynrec source caching is only sound for ordinary
-    /// RAM bytes whose guest-visible writes flow through the notifier.
+    /// True when ordinary guest writes to this physical range reach the
+    /// SMC notifier. Narrower than readable RAM: video, LFB and other mapped
+    /// regions may route writes around `smc_before_write`.
     pub fn dynrec_source_range_is_notifier_backed_ram(
         &self,
         physical_addr: usize,
@@ -3132,12 +3087,9 @@ impl Memory {
                 .collect();
             self.snoop_descriptor_bytes(start, &visible);
         }
-        // An EMS remap changes the physical bytes behind an unchanged linear
-        // address, so the flush must carry the translation-policy epoch with
-        // it — same pairing as `invalidate_tlb`. Without it the flush is
-        // invisible to every epoch consumer (the dyncore fetch-translation
-        // memo, the dbx link keep), which would keep a translation whose
-        // backing has just been swapped underneath it.
+        // An EMS remap changes the bytes behind an unchanged linear address.
+        // Pair the TLB flush with the translation-policy epoch so epoch-keyed
+        // consumers also observe the changed backing.
         self.flush_tlb_full();
         self.bump_translation_policy_epoch();
     }
@@ -3422,14 +3374,9 @@ impl Memory {
         self.core.has_descriptor_snoop()
     }
 
-    /// True when the physical span `[phys, phys + len)` intersects the
-    /// combined GDT+LDT snoop hull — the same two-compare reject
-    /// [`Self::snoop_gdt_write_ext`] itself applies first, so a span this
-    /// returns `false` for would be a snoop no-op even if every byte went
-    /// through the snooping write path. Lets bulk writers (the drc REP span
-    /// batch) skip the snoop exactly when the snoop would have done nothing,
-    /// instead of refusing whenever any table is registered — which in a
-    /// PM32 guest is always.
+    /// True when `[phys, phys + len)` intersects the combined GDT/LDT
+    /// snoop hull. Uses the same rejection test as [`Self::snoop_gdt_write_ext`],
+    /// so bulk writers may skip snooping exactly when this returns false.
     #[inline]
     pub fn descriptor_snoop_overlaps(&self, phys: usize, len: usize) -> bool {
         self.core.descriptor_snoop_overlaps(phys, len)
@@ -3601,19 +3548,14 @@ impl Memory {
         self.vga_bus_write_count
     }
 
-    /// Engagement counter for the native VGA commit routes alone (unit:
-    /// BYTES committed), excluding the interpreter's atomic counter. The
-    /// dyncore fast-leg tests read this to prove a store took the native
-    /// commit (delta == width) or the general route (delta == 0);
-    /// [`Memory::video_write_count`] is the sum production consumers read.
+    /// Bytes committed by the direct VGA commit routes, excluding the
+    /// interpreter's atomic counter. [`Memory::video_write_count`] sums both.
     #[inline]
     pub fn native_video_writes(&self) -> u64 {
         self.native_video_writes
     }
 
-    /// Fold in VGA writes committed by the emitted inline corridor, which
-    /// writes `planes_flat`/`ram` from generated code and so cannot call the
-    /// commit helpers. Called from the dyncore's per-dispatch mirror publish.
+    /// Record VGA writes committed outside the commit helpers.
     pub fn add_native_video_writes(&mut self, count: u64) {
         self.native_video_writes = self.native_video_writes.wrapping_add(count);
         self.vga_bus_write_count = self.vga_bus_write_count.wrapping_add(count);
@@ -3784,7 +3726,7 @@ impl Memory {
             self.write_tracking_enabled = true;
             // Tracking changes write-access policy: all stores must return to
             // the recording slow path. Retire both warm TLB host pointers and
-            // emitted direct-write proofs published before tracking began.
+            // direct-write proofs published before tracking began.
             self.bump_memory_policy_epoch();
         }
     }
@@ -3855,7 +3797,6 @@ impl Memory {
 
     /// Record a memory write (internal helper called by `write_u8`/16/32).
     /// Only records if write tracking is enabled and context is set.
-    /// Force non-inline to prevent stack overflow in release mode JIT callbacks.
     #[inline(never)]
     fn record_write(&mut self, addr: usize, old_value: u64, new_value: u64, size: u8) {
         if !self.write_tracking_enabled {
@@ -4134,10 +4075,7 @@ impl Memory {
     }
 
     /// Return a mutable fixed-size view without permitting resize or replacement.
-    ///
-    /// Records no plane rewrite: its production users fetch the base pointer
-    /// for generated code, whose stores mark `video_dirty_pages` when folded.
-    /// A caller that writes through the view itself must call
+    /// Records no plane rewrite: callers writing through the view must call
     /// [`Self::mark_vga_plane_rewrites`].
     #[inline]
     pub fn vga_planes_mut(&mut self) -> &mut [u8; VGA_PLANES_SIZE] {
@@ -4403,9 +4341,8 @@ impl Memory {
         if self.vga_write_handler != old {
             self.bump_memory_policy_epoch();
         }
-        // Recompute the dyncore fast-path arming alongside the handler — this is the
-        // single funnel (`apply_vga_pipeline` → here) through which every admission
-        // field changes in production.
+        // Recompute direct-commit admission alongside the handler. Every
+        // admission field changes through this pipeline-update funnel.
         self.vga_native_commit = self.compute_vga_native_commit();
     }
 
@@ -4415,10 +4352,9 @@ impl Memory {
         self.vga_write_handler
     }
 
-    /// Cached plane_mask- and address-independent VGA native-commit admission for the
-    /// dyncore `smc_store` fast path (EXP-033 Stage 1). `Some(kind)` guarantees that
-    /// EVERY store to the 0xA0000 aperture, under EVERY Map-Mask, commits byte-for-byte
-    /// identically to the interpreter via `commit_vga_{planar,chain4}_plain_byte`.
+    /// Cached plane-mask- and address-independent VGA commit admission.
+    /// `Some(kind)` guarantees every aperture store under every Map Mask
+    /// matches `commit_vga_{planar,chain4}_plain_byte` byte for byte.
     #[inline]
     pub fn vga_native_commit_kind(&self) -> Option<VgaCommitKind> {
         self.vga_native_commit
@@ -4736,14 +4672,10 @@ impl Memory {
         }
         if self.hle_ems_frame_owned && range_overlaps(addr, 4, EMS_FRAME_BASE, EMS_FRAME_SIZE) {
             self.smc_before_write(addr, 4);
-            // MDD-BUG-CRUCIBLE-00566: dyncore was told, the interpreter was
-            // not. Page walks set PDE/PTE Accessed and Dirty bits through this
-            // writer, and a legal (if pathological) guest can make an
-            // executable page double as a live page-table page. A hardware A/D
-            // update then changes bytes the interpreter still serves from its
-            // instruction cache, because `instr_cache_dirty` was never set.
-            // Every other RAM-mutating path in this file pairs the two calls;
-            // this one only ever made the dyncore half.
+            // MDD-BUG-CRUCIBLE-00566: page-walker A/D writes must also dirty
+            // the interpreter's instruction cache. An executable page can
+            // double as a page-table page, so an A/D update changes bytes
+            // that may already have cached decoded instructions.
             self.mark_instr_cache_dirty_range(addr, 4);
             for (i, byte) in bytes.iter().copied().enumerate() {
                 self.write_ems_aware_physical_u8_after_mask(addr.wrapping_add(i), byte);
@@ -4752,14 +4684,10 @@ impl Memory {
         }
         if full_write_in_bounds {
             self.smc_before_write(addr, 4);
-            // MDD-BUG-CRUCIBLE-00566: dyncore was told, the interpreter was
-            // not. Page walks set PDE/PTE Accessed and Dirty bits through this
-            // writer, and a legal (if pathological) guest can make an
-            // executable page double as a live page-table page. A hardware A/D
-            // update then changes bytes the interpreter still serves from its
-            // instruction cache, because `instr_cache_dirty` was never set.
-            // Every other RAM-mutating path in this file pairs the two calls;
-            // this one only ever made the dyncore half.
+            // MDD-BUG-CRUCIBLE-00566: page-walker A/D writes must also dirty
+            // the interpreter's instruction cache. An executable page can
+            // double as a page-table page, so an A/D update changes bytes
+            // that may already have cached decoded instructions.
             self.mark_instr_cache_dirty_range(addr, 4);
             self.ram[addr] = bytes[0];
             self.ram[addr + 1] = bytes[1];
@@ -4786,8 +4714,8 @@ impl Memory {
         self.core.invalidate_tlb_non_global()
     }
 
-    /// Retain the final paging-structure address without changing pointers or
-    /// the derived flat views. This uses existing padding, preserving JIT ABI.
+    /// Retain the final paging-structure address without changing pointers
+    /// or the derived flat views.
     pub fn mark_tlb_global(&mut self, linear_page: u32, backing_addr: u32, large: bool) {
         let leaf_permissions = (self.read_u32_physical(backing_addr as usize) & 6) as u8;
         self.core
@@ -4856,62 +4784,40 @@ impl Memory {
         self.tlb_insert(linear_page, physical_page, writable, user, dirty);
     }
 
-    /// Base address of the flat TLB projection block, for publication into
-    /// `Cpu::jit_tlb_view`.
-    ///
-    /// Stable for this `Memory`'s whole lifetime. Emitted probes reach the
-    /// CPL-3 views by adding `FLAT_VIEW_CPL3_DELTA` at publication time and the
-    /// write views by a `disp32` of `FLAT_VIEW_WRITE_DELTA`.
+    /// Base address of the flat TLB projection block, stable for this
+    /// `Memory`'s whole lifetime. `FLAT_VIEW_CPL3_DELTA` selects user views;
+    /// `FLAT_VIEW_WRITE_DELTA` selects write views.
     #[inline]
     pub fn flat_views_ptr(&self) -> *const u64 {
         self.core.flat_views_ptr()
     }
 
-    /// **Oracle O3 — the forced-miss sweep.** Arm (or disarm) suppression of the
-    /// flat TLB projection: the authoritative hashed table keeps filling normally,
-    /// but nothing is published into the projection, so every emitted probe reads a
-    /// null view and every native memory operation takes its slow exit.
-    ///
-    /// Arming also clears what is already published, so the effect is immediate
-    /// rather than only applying to future fills.
-    ///
-    /// The point is to run a guest program by a completely different route —
-    /// every memory access exits native code through the MEM-RESTART stub, is
-    /// re-run by the interpreter, and re-enters — and require the final `Cpu` state
-    /// to be bit-identical. That is the only oracle for MEM-RESTART clause 1
-    /// (commit-last atomicity); the frame-poisoning oracle O2 is structurally blind
-    /// to it, because a stub spilling POST-op state overwrites the poison with
-    /// plausible-but-wrong values.
-    ///
-    /// Instrumented and test builds only; absent from production release.
+    /// Oracle O3: suppress the flat TLB projection. The authoritative
+    /// hashed table keeps filling, but flat views stay null. Arming also
+    /// clears existing flat entries immediately. Instrumented/test builds only.
     #[cfg(any(test, debug_assertions, feature = "test-instrumentation"))]
     pub fn set_flat_projection_suppressed(&mut self, on: bool) {
         self.core.set_flat_projection_suppressed(on);
     }
 
-    /// Whether Oracle O3 flat-projection suppression is armed. Always `false`
-    /// in builds where it cannot be armed. Read-only: for census and disarm
-    /// predicates that must match what an emitted arm would be told.
+    /// Whether Oracle O3 suppression is armed; always false in builds
+    /// where suppression cannot be armed.
     #[inline]
     pub fn flat_projection_suppressed(&self) -> bool {
         self.core.flat_projection_suppressed()
     }
 
-    /// The hashed software-TLB slot `linear_page` indexes, tag unchecked: the
-    /// caller compares `linear_page` itself, exactly as an emitted probe does.
-    /// Unlike [`Self::tlb_lookup`] this records no TLB stats, so a diagnostic
-    /// census may read it without moving any counter.
+    /// Hashed TLB slot for `linear_page`, without checking its tag. The
+    /// caller must compare the page tag. Unlike [`Self::tlb_lookup`], this
+    /// does not change TLB statistics.
     #[inline]
     pub fn tlb_hashed_slot(&self, linear_page: u32) -> &TlbEntry {
         self.core.tlb_hashed_slot(linear_page)
     }
 
-    /// Mark or unmark a physical page as holding dyncore-compiled code.
-    ///
-    /// See `SoftwareTlb::set_page_watched`. The dyncore drives this from its
-    /// cache-page bucket transitions; the effect is that a watched page's write
-    /// views read as a miss, so stores route to the checked-store trampoline
-    /// where `smc_store` remains the decision authority.
+    /// Mark or unmark a physical page as watched. Watched pages have null
+    /// flat write views so writes take the checked path.
+    /// See `SoftwareTlb::set_page_watched`.
     #[inline]
     pub fn set_page_watched(&mut self, physical_page: u32, on: bool) {
         if (arena::ARENA_PHYS_START >> 12..arena::ARENA_PHYS_END >> 12)
@@ -4923,9 +4829,9 @@ impl Memory {
         self.set_flat_page_watched(physical_page, on);
     }
 
-    /// A dyncore watch on an arena page: recorded locally, published to the
-    /// session watch count, and OR-ed with remote interest so local eviction
-    /// never clears a remote watch (HLD §5.4 pieces 1-2).
+    /// An arena page watch, recorded locally and published to the session
+    /// watch count. Combined with remote interest so removing a local watch
+    /// never clears a remote watch.
     #[cold]
     #[inline(never)]
     fn set_arena_page_watched(&mut self, physical_page: u32, on: bool) {
@@ -5026,8 +4932,8 @@ impl Memory {
         self.ram.set_arena_hle_smc(None);
     }
 
-    /// Arena pages this process watches (dyncore or interpreter): the flush
-    /// set when the log wrapped past its cursor.
+    /// Arena pages this process watches: the flush set when the log wraps
+    /// past its cursor.
     pub fn arena_watched_pages(&self) -> Vec<u32> {
         self.arena
             .local_watches
@@ -5091,9 +4997,7 @@ impl Memory {
         self.core.is_pt_frame_recorded(physical_page)
     }
 
-    /// EXP-N005: has the page walker recorded any probeable paging-structure
-    /// frame? DBX uses this as a conservative guard for emitted stores whose
-    /// inline corridor cannot call the PT-write tripwire.
+    /// Has the page walker recorded any probeable paging-structure frame?
     #[inline]
     pub fn has_recorded_pt_frames(&self) -> bool {
         self.core.has_recorded_pt_frames()
@@ -5121,15 +5025,12 @@ impl Memory {
 }
 
 impl Memory {
-    /// EXP-N005: classify a physical write against the recorded PT frames and
-    /// bump `pt_write_epoch` on overlap.
+    /// Classify a physical write against recorded PT frames and bump
+    /// `pt_write_epoch` on overlap. Called by `smc_before_write` and direct
+    /// write paths that bypass that funnel.
     ///
-    /// Called by `smc_before_write` (the audited slow-path funnel) and
-    /// directly by the dbx checked-write helper, whose pure-RAM commit writes
-    /// `Memory::ram` without re-entering the funnel. Walker A/D write-backs
-    /// are excluded via the `pt_ad_writeback` window (amendment A3): they
-    /// OR-in status bits no walk conclusion reads, so they cannot stale a
-    /// translation premise.
+    /// Walker A/D writebacks are excluded by `pt_ad_writeback`: they OR in
+    /// status bits that do not change the page walk's translation result.
     #[inline]
     pub fn pt_tripwire_note_physical_write(&mut self, addr: usize, size: usize) {
         self.core.pt_tripwire_note_physical_write(addr, size)
@@ -5264,37 +5165,20 @@ impl Memory {
         // the TLB so a policy flip can't leave stale write pointers behind.
         let host_write_allowed =
             self.allow_rom_writes || !range_overlaps(phys_byte, ROM_PAGE_SIZE, BIOS_BASE, 0x10000);
-        // Firmware MP-table suppression is content-keyed, so `tlb_direct_read_ptr`
-        // refuses globally while it is armed — and every read fast path built on
-        // published `host_read` pointers (interpreter hit arms, the dyncore's
-        // emitted flat-view probes) must refuse the same set. Withhold the read
-        // pointer for any page the filter could rewrite: physical pages below
-        // LOW_MEMORY_LIMIT while armed. The WRITE view is withheld for the
-        // same set even though writes are never filtered: a published W entry
-        // with a null R entry breaks the `W-published ⊆ R-published` invariant
-        // that lets an RMW fast leg read through its write-view hit (the
-        // EXP-A031 panel's Q1 counterexample — a raw read would bypass the
-        // content filter). The cost is that A008-class store probes refuse
-        // low memory while suppression is armed, a rare boot-window regime.
+        // The firmware MP-table filter depends on byte content, so withhold
+        // read pointers for low-memory pages while it is armed. Withhold write
+        // pointers too: RMW fast paths can read through a write pointer, so
+        // every published W view must also have a published R view.
         let host_read_allowed =
             !(self.firmware_mp_table_suppression_enabled && phys_byte < LOW_MEMORY_LIMIT);
-        // Descriptor-table snoop (MDD-BUG-FLUX-00152): a page overlapping the
-        // GDT/LDT snoop hull must never carry a host_write pointer. Every write
-        // fast path built on published `host_write` — the interpreter's warm-TLB
-        // store arms and the drc's `tlb_direct_write_ptr` commit leg — stores
-        // straight to guest RAM without calling `snoop_gdt_write_ext`, so a
-        // published write pointer here means a descriptor edit lands with the
-        // table never marked dirty and stale segment admissions left live. REP
-        // MOVSD into a descriptor table is the canonical DPMI/extender idiom, so
-        // this is reachable guest behaviour, not a corner case.
+        // MDD-BUG-FLUX-00152: pages overlapping the GDT/LDT snoop hull must
+        // not carry host-write pointers. Warm-TLB stores bypass the snoop,
+        // leaving edited descriptors marked clean. REP MOVSD into descriptor
+        // tables makes this reachable in DPMI guests.
         //
-        // This is the same enforcement the dbx DirectGenerations publish already
-        // applies (see `snoop_gdt_write_ext`'s invariant note and
-        // `set_gdt_snoop_range`'s "snooped pages must never be natively
-        // writable"); the SoftwareTlb half was simply never wired up. Withholding
-        // the pointer sends those stores down the guarded slow path, which does
-        // snoop. The cost is bounded: descriptor tables are a few pages at most,
-        // and `recompute_snoop_window` flushes only when the hull actually moves.
+        // Withholding the pointer sends stores through the snooping path,
+        // matching direct-proof publication. Descriptor tables occupy few
+        // pages; `recompute_snoop_window` flushes only when the hull moves.
         let host_write_allowed =
             host_write_allowed && !self.descriptor_snoop_overlaps(phys_byte, ROM_PAGE_SIZE);
         let host_write_allowed = host_write_allowed && host_read_allowed;
@@ -5358,8 +5242,7 @@ impl Memory {
     /// * the entry is reachable at the caller's CPL.
     ///
     /// This is deliberately the SAME predicate `gp64-interp`'s
-    /// `tlb_translate_read` and the dyncore's emitted flat-view read probe
-    /// already use on every guest read; it is expressed once here so a Rust
+    /// `tlb_translate_read` uses; it is expressed once here so a Rust
     /// caller reuses it instead of reimplementing the TLB hash and the nullity
     /// contract.
     ///
@@ -5383,16 +5266,15 @@ impl Memory {
         unsafe { self.core.tlb_direct_read_ptr_in_page(linear, cpl3) }
     }
 
-    /// Host pointer for a write that a dyncore caller may commit directly.
+    /// Host pointer for a write a caller may commit directly.
     ///
-    /// This is the write-side peer of [`Self::tlb_direct_read_ptr`]. `Some`
-    /// requires one warm, writable, already-dirty ordinary-RAM page at the
-    /// caller's CPL. A physical page watched by the dyncore is refused even
-    /// though the authoritative hashed entry retains its host pointer; the
-    /// flat projection folds the same watch into write-view nullity.
+    /// The write-side peer of [`Self::tlb_direct_read_ptr`]. Requires one
+    /// warm, writable, already-dirty ordinary-RAM page at the caller's CPL.
+    /// Watched physical pages are refused even if the hashed entry retains
+    /// its host pointer; the flat projection nulls their write views too.
     ///
-    /// Callers must commit immediately and must not cache the pointer. Any
-    /// mutable memory operation can invalidate the translation or arm a watch.
+    /// Commit immediately and never cache the pointer. Any mutable memory
+    /// operation can invalidate the translation or arm a watch.
     #[inline]
     pub fn tlb_direct_write_ptr(&self, linear: u32, width: usize, cpl3: bool) -> Option<*mut u8> {
         self.tlb_direct_write_span(linear, width, cpl3)
@@ -5410,18 +5292,12 @@ impl Memory {
         self.core.tlb_direct_write_span(linear, width, cpl3)
     }
 
-    /// Returns a raw pointer to the software-TLB entries array.
+    /// Raw pointer to the software-TLB entries array.
     ///
-    /// The pointer is stable while the `Memory` allocation is alive because the
-    /// TLB entries are stored inline, not in a relocatable `Vec`. Dynrec native
-    /// code may keep this pointer in a reserved host register for one runner
-    /// call, including across helper callouts that borrow `Memory`, as long as
-    /// generated code live-loads entries and respects their tags/pointers.
-    ///
-    /// The pointer must not be cached in compiled block metadata or used after
-    /// the owning `Memory` is dropped. TLB contents may change across any
-    /// mutable memory operation; callers must treat this as a pointer to a
-    /// mutable table, not as a stable translation result.
+    /// Entries are stored inline: the pointer remains valid while `Memory`
+    /// stays alive and does not move. Contents may change on any mutable
+    /// memory operation; callers must live-load tags and pointers rather
+    /// than treat the table pointer as a stable translation result.
     pub fn tlb_entries_ptr(&self) -> *const TlbEntry {
         self.core.tlb_entries_ptr()
     }
@@ -6866,9 +6742,7 @@ impl Memory {
         }
     }
 
-    /// Write a byte to memory for JIT callouts (skips SMC tracking).
-    /// Supports Time Machine write tracking when enabled.
-    /// Force non-inline to prevent stack overflow in release mode JIT callbacks.
+    /// Write a byte without SMC tracking. Supports write tracking when enabled.
     #[inline(never)]
     pub fn write_u8_jit(&mut self, addr: usize, value: u8) {
         debug_assert!(
@@ -6913,7 +6787,7 @@ impl Memory {
         }
     }
 
-    /// Pure guard for the ND2A VGA no-SMC JIT word writer.
+    /// Guard for the VGA word writer that skips SMC handling.
     #[inline]
     pub fn can_write_u16_vga_no_smc_jit(&self, addr: usize) -> bool {
         let Some(end) = addr.checked_add(1) else {
@@ -6931,13 +6805,10 @@ impl Memory {
         !self.is_rom_addr(addr) && !self.is_rom_addr(end)
     }
 
-    /// Write a VGA word for JIT fast paths that have already proven the span,
-    /// A20, paging, and SMC bitmap preconditions.
-    ///
-    /// This deliberately skips SMC prewrite/notifier/post-write handling, but
-    /// keeps the normal byte-level VGA machinery in `write_u8_inner()`.
-    /// This is only for the ND2A no-SMC VGA JIT path; it is not a general
-    /// memory write primitive.
+    /// Write a VGA word after the caller proves span, A20, paging and SMC
+    /// bitmap preconditions. Skips SMC prewrite/notifier/post-write handling
+    /// but keeps the byte-level VGA machinery in `write_u8_inner()`.
+    /// Not a general memory-write primitive.
     #[inline(never)]
     pub fn write_u16_vga_no_smc_jit(&mut self, addr: usize, value: u16) -> bool {
         if !self.can_write_u16_vga_no_smc_jit(addr) {
@@ -6955,11 +6826,8 @@ impl Memory {
         true
     }
 
-    /// Record post-write instruction-cache side effects for JIT inline stores.
-    ///
-    /// Inline JIT stores can bypass `write_u*_jit()` and write RAM bytes directly.
-    /// This helper mirrors the instruction-cache dirty marking behavior for the
-    /// addresses that would be writable via normal memory semantics.
+    /// Record instruction-cache dirtying after stores that bypass the
+    /// normal memory writers, for addresses normal memory semantics admit.
     #[inline(never)]
     pub fn note_jit_write(&mut self, addr: usize, size: usize) {
         if !matches!(size, 1 | 2 | 4) {
@@ -7114,10 +6982,9 @@ impl Memory {
         {
             return false;
         }
-        // A copy onto the GDT/LDT must run the descriptor snoop, the only path
-        // that advances the descriptor generation native engines check their
-        // cached segment proofs against. Refuse, as bulk_write_span_is_plain_ram
-        // does, so the caller's per-byte fallback snoops (MDD-BUG-CRU-01489).
+        // Copies onto the GDT/LDT must run the descriptor snoop and advance
+        // its generation. Refuse so the per-byte fallback snoops, as in
+        // `bulk_write_span_is_plain_ram` (MDD-BUG-CRU-01489).
         if self.descriptor_snoop_overlaps(dst, len) {
             return false;
         }
@@ -7260,52 +7127,16 @@ impl Memory {
         }
     }
 
-    /// Commit a single plain chain-4 VGA store byte directly (the dyncore native
-    /// fast path), reproducing the interpreter chain-4 write handler's effect
-    /// byte-for-byte in the plain pipeline state gated by
-    /// [`Memory::vga_chain4_plain_store_range`].
+    /// Commit an admitted VGA span directly, preserving byte order and the
+    /// plain chain-4 or planar pipeline's effects. The caller must prove
+    /// `kind` is armed, the span is one page and at most four bytes, and
+    /// its range predicate holds. Unpaged accesses must have no overlapping
+    /// DPMI physical mapping.
     ///
-    /// Dual-writes BOTH buffers the interpreter keeps coherent: the
-    /// de-interleaved `planes_flat` (what chain-4 CPU reads and `hash_state`
-    /// observe) AND the linear `ram` mirror (what Mode 13h scanout reads). In the
-    /// plain state the written byte equals the raw value (write-mode 0, no
-    /// rotate/logic-op, no set/reset, full bit-mask), so no GC-pipeline decode is
-    /// needed — the interpreter's chain-4 arm computes exactly `ram[addr] =
-    /// planes_flat[plane*PLANE_SIZE + (offset & !3)] = value` in that state.
-    ///
-    /// The caller MUST have already admitted the address via
-    /// `vga_chain4_plain_store_range`; the `debug_assert` fails loud on any
-    /// future misuse against a non-plain state or out-of-window address.
-    /// EXP-IQ002 L2: the interpreter chain-4 fast-arm commit — one aperture
-    /// byte, ALL the side effects the interpreter's full route would perform
-    /// that [`Memory::commit_vga_chain4_plain_byte`] alone does not:
-    /// decoded-instruction-cache dirtying (the interp CAN source code from
-    /// VRAM — the dbx skip's justification does not transfer, panel lens 2),
-    /// the SVGA-sync video-page dirty mark (dbx compensates with a coarse mark
-    /// whenever it folds a non-zero native commit count), and the
-    /// always-on engagement counter (unit: BYTES committed). The caller owns
-    /// the admission gate: cached kind == Chain4, whole access inside
-    /// `[VIDEO_BASE, VIDEO_BASE + VIDEO_WINDOW_64K)`, group-of-four not
-    /// crossed for multi-byte stores.
-    /// EXP-A029: DRC helper-level native VGA commit for one admitted span
-    /// (chain-4 or plain planar). The caller (`checked_store_bits`) owns the
-    /// admission gate: `vga_native_commit_kind()` armed, one-page span,
-    /// width <= 4, the per-store range predicate for `kind`, and (unpaged)
-    /// no DPMI physical mapping overlapping the span. Skip-set soundness,
-    /// established by the A029 adversarial panel:
-    /// - No watch veto: VGA pages are never source-cached by any dynrec
-    ///   (`direct_host_ram_range` rejects the aperture), so the SMC page
-    ///   watch can never cover them; the only data-watch veto in the store
-    ///   path lives in `tlb_direct_write_ptr`, which always misses VGA.
-    /// - SMC span/notifier checks are vacuous for the same reason.
-    /// - Descriptor-snoop skip inherits the interp fast arm's and the dbx
-    ///   arm's shared assumption that descriptor tables do not live in the
-    ///   VGA aperture (unenforced; shared with both precedents).
-    /// - The PT-write tripwire is NOT skipped (page tables in VRAM are
-    ///   legal): both precedents miss this; this seam closes it.
-    ///
-    /// The commit fns mark video dirty pages and count engagement in BYTES
-    /// (`native_video_writes`), matching the general route's granularity.
+    /// The commit updates both VGA buffers as required, marks video and
+    /// decoded-instruction pages dirty, runs the PT-write tripwire, and
+    /// counts engagement in bytes. It skips SMC and descriptor snooping;
+    /// the caller must ensure those checks are unnecessary.
     #[inline]
     pub fn drc_commit_vga_native_span(
         &mut self,
@@ -7394,31 +7225,12 @@ impl Memory {
         self.add_native_video_writes(len as u64);
     }
 
-    /// Note a drc-native raw write to direct host RAM for instruction-cache
-    /// coherence.
+    /// Record instruction-cache side effects after a direct RAM write.
+    /// Bypassing the normal writers must not leave the interpreter serving
+    /// stale decoded instructions (MDD-BUG-FLUX-00145).
     ///
-    /// The dynrec-drc checked-store legs write `ram[addr]` directly once every
-    /// byte carries a `direct_host_ram_range` proof, which is much cheaper than
-    /// `write_u8` but skips its side effects. One of those matters for
-    /// correctness: `write_u8`'s fast path calls
-    /// [`Self::mark_instr_cache_dirty_range`], and without it a drc-native code
-    /// patch never sets `instr_cache_dirty`, so the INTERPRETER can keep serving
-    /// a stale decoded instruction for a page it had already executed from
-    /// (MDD-BUG-FLUX-00145).
-    ///
-    /// That is reachable rather than theoretical: the direct-RAM proof excludes
-    /// video, LFB, EMS and ROM, so these stores land in ordinary guest RAM —
-    /// which is exactly where guest code lives — and the interpreter still runs
-    /// under `--engine dynrec-drc` for every 16-bit, real-mode, V86 and gap
-    /// fallback. The drc's own block cache is already handled separately by
-    /// `touches_code` / `invalidate_changed_cache_physical_spans`; this is the
-    /// interpreter's decoded cache, which nothing else covers on this leg.
-    ///
-    /// Kept as cheap as the sibling VGA leg
-    /// ([`Self::drc_commit_vga_native_span`], whose equivalent call `drc_core`'s
-    /// T6 pins as load-bearing): `mark_instr_cache_dirty_range` returns
-    /// immediately when the flag is already set, and otherwise only tests the
-    /// exec-page bits for the touched pages.
+    /// The range check returns immediately when the cache is already dirty;
+    /// otherwise it tests only the touched pages' execution bits.
     #[inline]
     pub fn drc_note_direct_ram_write(&mut self, physical_addr: usize, len: usize) {
         self.mark_instr_cache_dirty_range(physical_addr, len);
@@ -7593,11 +7405,8 @@ impl Memory {
         if self.s3_legacy_aperture != config {
             self.s3_legacy_aperture = config;
             self.bump_memory_policy_epoch();
-            // The native-commit admission consults `s3_legacy_aperture.active`
-            // (see `compute_vga_native_commit`); this toggle is port-I/O-
-            // reachable only, so recomputing here keeps the cached flag
-            // coherent for the interpreter (live reads) and the dbx mirror
-            // (republished after scalar I/O).
+            // Direct-commit admission consults `s3_legacy_aperture.active`.
+            // Recompute after this port-I/O-reachable toggle to keep it coherent.
             self.vga_native_commit = self.compute_vga_native_commit();
         }
     }
@@ -8099,11 +7908,8 @@ impl Memory {
     /// - Silently skips 4-KiB pages that have been registered as ROM
     ///   via [`Memory::mark_rom_page`] / [`Memory::mark_rom_range`].
     ///   Bytes on non-ROM pages within the range are still filled.
-    /// - Notifies the SMC write snoop once for the whole range (RC-1:
-    ///   compiled code may exist by the time a second program loads, so
-    ///   a fill overlapping compiled source must invalidate it like any
-    ///   other write channel; one range-level call, free when no
-    ///   notifier is bound).
+    /// - Notifies the SMC write snoop once for the whole range, like other
+    ///   write channels. Free when no notifier is bound.
     ///
     /// Cost: one contiguous `[u8]::fill` when no ROM regions are
     /// registered (the common DOS / HLE configuration); one per
@@ -8248,9 +8054,9 @@ impl Memory {
         // observes the new epochs can still read past the new end; growth
         // raises it only in `resize_ram_backing`, once the backing exists.
         self.core.lower_raw_ram_limit(new_len);
-        // Retire every published pointer before Vec::resize may move or shorten
-        // the allocation. Keep the TLB flush explicit: direct-proof invalidation
-        // stales dynrec guards but does not clear cached host pointers.
+        // Retire published pointers before resize may move or shorten the
+        // allocation. Direct-proof invalidation does not clear TLB pointers,
+        // so keep the TLB flush explicit.
         self.invalidate_all_direct_proofs();
         self.flush_tlb_full();
         self.resize_ram_backing(new_len);
@@ -8584,24 +8390,9 @@ impl Memory {
         MemorySliceMut::borrowed(self, addr, end - addr)
     }
 
-    /// Could the physical write `[addr, addr + size)` land on a page the
-    /// dyncore holds compiled code on?
-    ///
-    /// `false` is a PROOF that the write is invisible to every SMC consumer:
-    /// both dyncore engines short-circuit a drained dirty span whose page has
-    /// no cached block (`DbxCore::invalidate_dirty_spans`' `code_pages.get()`
-    /// miss; `DynCore::invalidate_overlapping_channel`'s `cache_pages.get()`
-    /// miss), so recording it can only cost time — and, past
-    /// `SNOOP_PAGE_CAP` distinct pages, provoke a whole-cache flush that
-    /// nothing asked for.
-    ///
-    /// Sound because the watch bit leads the cache in the dangerous direction:
-    /// a page is watched BEFORE any block on it can execute (DBX sets it inside
-    /// `install`, before the resolved block is returned; the legacy engine
-    /// RUN-PINs the page before entering a freshly built block, which is
-    /// entered before `cache_insert`), and is un-watched only through the
-    /// deferred reconcile queue, i.e. LATE. Over-watching costs a notification;
-    /// under-watching is what would be unsound, and no path produces it.
+    /// Could `[addr, addr + size)` touch a watched physical page?
+    /// The SMC notifier is skipped only when the watch bitmap proves the
+    /// whole span unwatched; out-of-bitmap pages conservatively need a snoop.
     #[inline]
     #[must_use]
     pub fn smc_span_may_hold_code(&self, addr: usize, size: usize) -> bool {
@@ -8610,9 +8401,8 @@ impl Memory {
 
     #[inline]
     pub fn smc_before_write(&mut self, addr: usize, size: usize) -> bool {
-        // One fast guard covers local JIT pages and remote arena interest
-        // (HLD §5.4 piece 3). A process with neither still pays one boolean
-        // test per store.
+        // One fast guard covers local code-page watches and remote arena
+        // interest. A process with neither pays one boolean test per store.
         if !self.smc_interest {
             return false;
         }
@@ -8648,7 +8438,6 @@ impl Memory {
         true
     }
 
-    /// Force non-inline to prevent stack overflow in release mode JIT callbacks.
     #[inline(never)]
     fn prepare_write_addr(&mut self, addr: usize) -> Option<usize> {
         let addr = self.mask_address(addr);
@@ -8843,13 +8632,9 @@ impl Memory {
             hasher.update(&self.ram[extent]);
         }
         hasher.update(self.vga_planes());
-        // Include the FULL VGA pipeline state that affects how VRAM is viewed or
-        // written, plus the derived cached write handler. This makes an A/B
-        // parity diff (interpreter vs dynrec) catch any predicate-field
-        // divergence even when the ram/planes_flat bytes and the final frame CRC
-        // happen to coincide (VGA chain4 native-store fast-path HLD §4.4), and
-        // strengthens checkpoint/time-travel parity generally. Field order
-        // follows `VgaPipelineState` for auditability.
+        // Include the full VGA pipeline and derived write handler so the hash
+        // detects state differences even when VRAM bytes and frame CRC agree.
+        // Field order follows `VgaPipelineState` for auditability.
         hasher.update(&[
             self.vga.video_mode,
             self.vga.chain4 as u8,
@@ -8873,13 +8658,9 @@ impl Memory {
         *hasher.finalize().as_bytes()
     }
 
-    /// VGA-only parity hash for the dyncore A/B store-lever gate: VRAM + VGA-state
-    /// ONLY, excluding general guest RAM. General RAM legitimately diverges between
-    /// the interpreter and the dynrec at equal timer boundaries (PIT IRQ0 timing
-    /// from dyncore block overshoot), which made the all-RAM `hash_state()` a
-    /// false-FAIL machine for the A/B gate. This hash covers exactly what a VGA
-    /// store-lever bug could corrupt: the de-interleaved planes, the CPU-visible
-    /// video window, and every VGA-pipeline field the write handler dispatches on.
+    /// VGA-only hash: de-interleaved planes, the CPU-visible video window,
+    /// and every VGA pipeline field used by the write handler.
+    /// Excludes general guest RAM.
     pub fn hash_vga_parity(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
         hasher.update(self.vga_planes());

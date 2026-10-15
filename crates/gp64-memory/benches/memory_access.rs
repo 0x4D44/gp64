@@ -1,7 +1,7 @@
 //! Microbenchmarks for the memory subsystem.
 //!
-//! Measures read/write throughput across different address regions, JIT vs
-//! standard write paths, and bulk sequential reads.
+//! Measures throughput across address regions, writes with and without SMC
+//! tracking, and bulk sequential reads.
 
 use criterion::{
     black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
@@ -109,7 +109,7 @@ fn bench_read_u32_physical(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// write_u8_jit — JIT-optimized path (no SMC tracking)
+// write_u8_jit — write path without SMC tracking
 // ---------------------------------------------------------------------------
 
 fn bench_write_u8_jit(c: &mut Criterion) {
@@ -131,7 +131,7 @@ fn bench_write_u8_jit(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// write path comparison: standard vs JIT
+// write path comparison: with and without SMC tracking
 // ---------------------------------------------------------------------------
 
 fn bench_write_path_comparison(c: &mut Criterion) {

@@ -260,8 +260,8 @@ fn test_tlb_size_is_4096() {
 
 // ========== Layout pins (LLD 2.1; M0c `memory_hot_layout`) ==========
 
-/// Generated code and the interpreter read these through raw pointers, so
-/// any drift is an ABI break, not a refactor.
+/// The interpreter reads these fields through raw pointers; their layout
+/// constants must agree with the actual structure.
 #[test]
 fn tlb_entry_and_flat_view_layout_is_pinned() {
     assert_eq!(size_of::<TlbEntry>(), 32);
@@ -324,8 +324,8 @@ fn memory_core_layout_is_pinned() {
     }
 }
 
-/// A fresh core never lets generated code read RAM directly: the machine
-/// must publish a limit first (PC at construction, machine at X11).
+/// A fresh core admits no direct RAM reads until the machine publishes
+/// its backing limit.
 #[test]
 fn raw_ram_limit_starts_at_zero_and_only_lowers_safely() {
     let mut machine = NullMachine::new(64 * 4096);
@@ -1103,9 +1103,7 @@ fn null_machine_pt_tripwire_item_reaches_the_core() {
     assert_ne!(machine.core().dynrec_pt_write_epoch(), before);
 }
 
-/// `X86Machine::CORE_OFFSET` (M3b.6 LLD §2.3) is the offset of the core
-/// `core()` returns, so generated code that adds a `MemoryCore::*_OFFSET` to
-/// it reads the machine's own core word.
+/// `X86Machine::CORE_OFFSET` must identify the core `core()` returns.
 #[test]
 fn null_machine_core_offset_locates_its_core() {
     let machine = NullMachine::new(0x10000);

@@ -1,17 +1,9 @@
-//! PC `Memory` as an [`X86Machine`] (HLD 2026.10.02 R1/R3, LLD §3; step M1).
+//! PC `Memory` as an [`X86Machine`].
 //!
-//! Each body is today's PC code, moved or delegated verbatim, behind
-//! `#[inline(always)]`. The engines do not consume the trait until M2 (the
-//! interpreter) and M3 (DRC), so in M1 nothing calls these items on a hot path;
-//! the M2 assembly diff is what proves the generic call sites match today's.
-//!
-//! The ordered access preludes (`write_prelude`, `read_prelude`,
-//! `write_epilogue`) carry the machine half of the interpreter's
-//! `vga_aware_*` funnels (`crates/gp64-interp/src/lib.rs`), moved verbatim
-//! in M2.1 (LLD 2026.10.03 "M2 machine-generic interpreter map" §1.1). The
-//! engine keeps its half: the attribution counter, the core duties and the
-//! raw store on `Raw`, the checked calls on `Checked`, the byte split on
-//! `SplitBytes`, and its write/read observers on every route but `Dropped`.
+//! The access preludes and epilogue carry the machine-specific half of the
+//! interpreter's memory funnels. The interpreter retains attribution, core
+//! duties, raw stores on `Raw`, checked calls on `Checked`, byte splitting
+//! on `SplitBytes`, and observers on every route except `Dropped`.
 
 use gp64_memory_core::machine::__audited::AuditedMachine;
 use gp64_memory_core::{
@@ -150,8 +142,8 @@ unsafe impl X86Machine for Memory {
         GuestPhys(a.0 & !((!p.linear_mask()) as usize))
     }
 
-    /// The A20 mask alone: the policy capture reads the diagnostic trace
-    /// configuration, which the DRC fetch path must not pay for.
+    /// The A20 mask alone, avoiding diagnostic configuration reads during
+    /// policy capture.
     #[inline(always)]
     fn mask_phys(&self, a: ArchPhys) -> GuestPhys {
         GuestPhys(self.dynrec_mask_physical_address(a.0))

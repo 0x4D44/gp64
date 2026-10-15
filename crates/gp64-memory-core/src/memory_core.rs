@@ -49,29 +49,20 @@ pub struct MemoryCore {
     /// History of full TLB flushes requested by PGE-capable CR4 writes.
     /// Region premises must retain this history even if CR4 returns to its old value.
     pub(crate) dynrec_global_tlb_flush_epoch: u64,
-    /// Epoch for A20 identity. Dynrec source-code keys use this in addition
-    /// to the post-A20 physical page so A20 aliases cannot reuse stale code.
+    /// Epoch for A20 identity, separate from the post-A20 physical page.
     pub(crate) alias_generation: u64,
-    /// Optional SMC tracker pointer for JIT invalidation
+    /// Optional self-modifying-code tracker.
     pub(crate) smc_notifier: Option<Arc<dyn SmcNotify>>,
-    /// EXP-N005 link-keep tripwire: bumped when a guest write lands in a
-    /// recorded paging-structure frame, or when a page walk records an
-    /// unprobeable frame (HLE EMS overlay alias, beyond the bitmap — the
-    /// amendment-A5 sever-always route). Sampled by the dyncore's link-keep
-    /// decision at translation-epoch edges; an unchanged value across an edge
-    /// is the proof that no PT edit could have staled a resolved link.
+    /// Bumped when a guest write lands in a recorded paging-structure frame,
+    /// or a page walk records an unprobeable frame (an EMS overlay alias or
+    /// a frame beyond the bitmap).
     pub(crate) pt_write_epoch: u64,
-    /// EXP-N005: bumped by translation-STRUCTURE events that must always
-    /// sever dyncore links regardless of the tripwire — DPMI physical-mapping
-    /// churn (`bump_direct_translation_policy_epoch`), A20 toggles
-    /// (`bump_a20_generation`), and snapshot/checkpoint restore.
+    /// Bumped by translation-structure events independently of page-table
+    /// writes: DPMI physical-mapping changes, A20 toggles, and restore.
     pub(crate) translation_structure_epoch: u64,
-    /// EXP-N006 amendment N2: process-unique identity of this `Memory`
-    /// instance (monotonic, taken at construction). Folded into the dyncore's
-    /// cross-span dispatch-memo baseline tuple so a replaced `Memory` whose
-    /// heap allocations reuse freed addresses and whose fresh epoch counters
-    /// coincidentally equal stored baselines can never be mistaken for the
-    /// instance the baselines were captured against (pointer-ABA closure).
+    /// Process-unique identity of this `Memory` instance, taken at construction.
+    /// Unlike a heap address or fresh epoch counters, it cannot confuse a
+    /// replacement instance with its predecessor.
     pub(crate) instance_nonce: u64,
     /// Pages that have executed instructions (for interpreter cache invalidation).
     pub(crate) instr_exec_pages: Vec<u64>,
@@ -89,20 +80,16 @@ pub struct MemoryCore {
     /// snooped; maintained solely by the three snoop-range setters.
     pub(crate) snoop_min: usize,
     pub(crate) snoop_max: usize,
-    /// Monotonic descriptor-table generation (dynrec-direct WI-C1). Single
-    /// source of truth for descriptor admission guards: bumped by the GDT/LDT
-    /// write snoop, snoop-range (re)programming, and the root engine loop on
-    /// CPU-side descriptor reloads. `Cell` because the write snoop runs
-    /// through `&self`.
+    /// Monotonic descriptor-table generation. Bumped by the GDT/LDT write
+    /// snoop and snoop-range (re)programming. `Cell` because the write snoop
+    /// runs through `&self`.
     pub(crate) descriptor_generation: Cell<u64>,
-    /// Stable-heap generations block for emitted single-load proof guards.
-    /// Boxed so its address survives moves of the `Memory` value; never
-    /// replaced for the lifetime of this `Memory`.
+    /// Stable-heap generation words for direct-memory proofs. Boxed so the
+    /// address survives moves of `Memory`; never replaced during its lifetime.
     pub(crate) direct_generations: Box<DirectGenerations>,
-    /// WI-G1 per-page proof generation table: one `u32` word per 4 KiB page
-    /// of the pinned RAM capacity. Emitted guards read the bound page's
-    /// word through a slot-held pointer. Heap-pinned; replaced ONLY by
-    /// over-capacity `resize_ram_backing` under a new identity epoch.
+    /// Per-page proof generations: one `u32` per 4 KiB of pinned RAM.
+    /// Heap-pinned; replaced only by over-capacity `resize_ram_backing`
+    /// under a new identity epoch.
     pub(crate) page_generation_table: Box<[Cell<u32>]>,
     /// Tables retired by over-capacity growth — kept alive (never freed)
     /// so stale pointers captured under an older identity epoch remain
@@ -135,9 +122,8 @@ pub struct MemoryCore {
     /// `&self`-borrowed slice, so stores
     /// through published write pointers are sound under the aliasing model.
     pub(crate) ram_base: RamBasePtr,
-    /// Fast guard: true when the JIT has at least one compiled code page.
-    /// Avoids vtable dispatch through `smc_notifier` on every memory write
-    /// when no JIT blocks exist (interpreter-only or JIT with empty cache).
+    /// Fast guard for watched code pages. Avoids vtable dispatch through
+    /// `smc_notifier` on every memory write when no pages are watched.
     pub(crate) smc_has_code_pages: bool,
     /// EXP-N005: fast guard for the funnel probe; set on the first recorded
     /// (probeable) PT frame and never cleared.
@@ -158,14 +144,11 @@ pub struct MemoryCore {
     /// been published since the last whole-block invalidation. RAM resize
     /// clears this latch before changing the backing allocation or length.
     pub(crate) direct_proofs_live: Cell<bool>,
-    /// Bytes of raw RAM backing, from physical address 0, that generated code
-    /// may read directly at a physical address through the runtime's RAM base
-    /// (`[0, raw_ram_limit)`), bypassing the checked helpers. 0 means never
-    /// inline: every such read takes its helper. Machine-owned: PC `Memory`
-    /// keeps it equal to its RAM backing length, lowering it before a resize
-    /// bumps any epoch (LLD E4) and raising it only once the new backing
-    /// exists. Other machines leave it zero until their backing is ready. Appended after the hot
-    /// flags so their offsets do not move.
+    /// Bytes of raw RAM backing available for direct physical reads through
+    /// the RAM base (`[0, raw_ram_limit)`). Zero means no direct reads.
+    /// Machine-owned: PC `Memory` lowers it before a resize bumps any epoch
+    /// and raises it only once the new backing exists. Other machines leave
+    /// it zero until their backing is ready.
     pub(crate) raw_ram_limit: usize,
 }
 
@@ -281,9 +264,8 @@ impl MemoryCore {
         self.memory_policy_epoch = self.memory_policy_epoch.wrapping_add(1);
         self.direct_memory_policy_epoch = self.direct_memory_policy_epoch.wrapping_add(1);
         self.dynrec_translation_epoch = self.dynrec_translation_epoch.wrapping_add(1);
-        // EXP-N005: physical-mapping churn changes the physical BACKING under
-        // an unchanged walk result — the PT tripwire cannot see it, so it is
-        // an always-sever structure event for the dyncore's link keep.
+        // Physical-mapping changes alter the backing under an unchanged page
+        // walk result, so they need a structure epoch bump without a PT write.
         self.translation_structure_epoch = self.translation_structure_epoch.wrapping_add(1);
         self.direct_generations
             .record_policy_epoch(self.direct_memory_policy_epoch);
@@ -305,10 +287,8 @@ impl MemoryCore {
     pub fn bump_alias_generation(&mut self) {
         self.alias_generation = self.alias_generation.wrapping_add(1);
         self.dynrec_translation_epoch = self.dynrec_translation_epoch.wrapping_add(1);
-        // EXP-N005: an A20 flip changes physical aliasing with no PT write —
-        // always-sever for the dyncore's link keep. Snapshot restore reaches
-        // here too (`invalidate_all_direct_proofs` → this bump), so restore
-        // is covered by the same structure event.
+        // An A20 flip changes physical aliasing without a PT write. Restore
+        // also reaches this bump through `invalidate_all_direct_proofs`.
         self.translation_structure_epoch = self.translation_structure_epoch.wrapping_add(1);
         self.direct_generations
             .record_a20_epoch(self.alias_generation);
@@ -437,12 +417,7 @@ impl MemoryCore {
         if hull_moved {
             // Pair the flush with the translation-policy epoch, as every other
             // TLB-flush edge does (`invalidate_tlb`, `invalidate_tlb_page`).
-            // A bare flush drops the cached translations but tells no epoch
-            // consumer — the dyncore fetch-translation memo and the dbx link
-            // keep both trust `dynrec_translation_epoch` to cover every flush
-            // edge, so a silent one would launder a stale translation into a
-            // keep. Conditional exactly like the flush it accompanies: an
-            // unmoved hull changes no translation.
+            // An unmoved hull changes no translation and needs neither operation.
             self.flush_tlb_full();
             self.bump_translation_policy_epoch();
         }
@@ -652,26 +627,17 @@ impl MemoryCore {
 
     #[inline]
     pub fn smc_before_write(&mut self, addr: usize, size: usize) -> bool {
-        // Fast guard: skip the vtable dispatch when no JIT code pages exist.
-        // This is the common case in interpreter-only mode and when the JIT
-        // cache is empty, turning what would be a vtable call into a single
-        // boolean check on every memory write.
+        // Skip the notifier's vtable dispatch when no code pages are watched.
         if !self.smc_has_code_pages {
             return false;
         }
         if size == 0 {
             return false;
         }
-        // EXP-N005 PT-write tripwire: a store landing in a recorded
-        // paging-structure frame invalidates the dyncore's link-keep premise.
-        // Probed here because this funnel is the audited choke point every
-        // diverted store reaches — recorded frames null their flat write
-        // views (like SMC-watched pages), so no warm-TLB or emitted fast
-        // path can bypass it. (The store routes that commit RAM without this
-        // funnel — the dbx and drc checked-write helpers' direct commits —
-        // call `pt_tripwire_note_physical_write` themselves.) The
-        // `smc_has_code_pages` guard above is sound for this probe too: no
-        // code pages ⇒ no blocks ⇒ no links ⇒ nothing to keep.
+        // A store in a recorded paging-structure frame bumps the PT-write
+        // epoch. Recorded frames have null flat write views, so direct writes
+        // must reach this funnel or call `pt_tripwire_note_physical_write`.
+        // The guard above skips the tripwire when no code pages are watched.
         self.pt_tripwire_note_physical_write(addr, size);
         if !self.smc_span_may_hold_code(addr, size) {
             return false;
@@ -847,9 +813,8 @@ impl MemoryCore {
             )
         {
             self.ldt_dirty.set(true);
-            // Descriptor bytes changed (dynrec-direct WI-C1): stamp the
-            // descriptor word only. Pages in a snooped range are NonDirect
-            // at publish, so no native write can bypass this path.
+            // Descriptor bytes changed: stamp the descriptor generation only.
+            // Pages in a snooped range are NonDirect at publication.
             self.bump_descriptor_generation();
         }
         if self.gdt_snoop_end != 0
@@ -861,8 +826,8 @@ impl MemoryCore {
             )
         {
             self.gdt_dirty.set(true);
-            // Descriptor bytes changed (dynrec-direct WI-C1): stamp the
-            // descriptor word only (see the LDT arm above).
+            // Descriptor bytes changed: stamp the descriptor generation only
+            // (see the LDT arm above).
             self.bump_descriptor_generation();
             true
         } else {
@@ -878,12 +843,10 @@ impl MemoryCore {
     /// Byte offset of the `smc_has_code_pages` fast guard (layout pin).
     pub const SMC_HAS_CODE_PAGES_OFFSET: usize =
         std::mem::offset_of!(MemoryCore, smc_has_code_pages);
-    /// Byte offset of the `raw_ram_limit` word that generated code bounds its
-    /// direct physical RAM reads against (layout pin).
+    /// Byte offset of the direct physical RAM read limit.
     pub const RAW_RAM_LIMIT_OFFSET: usize = std::mem::offset_of!(MemoryCore, raw_ram_limit);
 
-    /// Bytes of raw RAM generated code may read directly at a physical
-    /// address; 0 means never inline.
+    /// Bytes of RAM available for direct physical reads; zero means none.
     #[inline]
     #[must_use]
     pub fn raw_ram_limit(&self) -> usize {
@@ -1022,16 +985,11 @@ impl MemoryCore {
         Some(unsafe { entry.host_read.add((linear & 0xFFF) as usize) })
     }
 
-    /// Whether a commit to `[addr, addr + size)` would set the
-    /// decoded-instruction cache's dirty flag right now: the flag is still
-    /// clear and an exec-marked page overlaps the span. The same page test
-    /// as `Memory::mark_instr_cache_dirty_range`, without the mark, for a
-    /// native store corridor that skips the mark and must prove it owes none
-    /// (the DRC a64 planar-VGA arm). Conservative over sparse holes: a
-    /// marked page counts whether or not it is backed.
-    ///
-    /// Never inline: an out-of-line predicate, as it was in `Memory`, so the
-    /// per-dispatch VGA mirror publication keeps its shape.
+    /// Whether a commit to `[addr, addr + size)` would set the decoded-
+    /// instruction cache's dirty flag: the flag is clear and an exec-marked
+    /// page overlaps the span. Uses the same page test as
+    /// `Memory::mark_instr_cache_dirty_range`, without marking anything.
+    /// Conservative over sparse holes: a marked page counts even if unbacked.
     #[inline(never)]
     pub fn store_would_dirty_instr_cache(&self, addr: usize, size: usize) -> bool {
         if size == 0 || self.is_instr_cache_dirty() {
@@ -1046,15 +1004,12 @@ impl MemoryCore {
             .any(|page| self.instr_exec_page_marked(page))
     }
 
-    /// EXP-N005: could a recorded paging-structure frame lie in the physical
-    /// page range `[first_page, end_page)`? DBX's inline VGA arms commit to
-    /// the device surfaces without the PT-write tripwire, so they disarm only
-    /// while a recorded frame sits inside the aperture they admit.
+    /// Could a recorded paging-structure frame lie in the physical page
+    /// range `[first_page, end_page)`?
     ///
-    /// `false` while no probeable frame has been recorded anywhere (the
-    /// [`Self::has_recorded_pt_frames`] answer). Once one has, pages the
-    /// bitmap cannot represent answer `true`, as in
-    /// `FlatTlb::span_may_be_pt_frame`. An empty range answers `false`.
+    /// False while no probeable frame has been recorded anywhere. Once one
+    /// has, pages outside the bitmap answer true, as in
+    /// `FlatTlb::span_may_be_pt_frame`. An empty range answers false.
     #[inline]
     pub fn has_recorded_pt_frame_in(&self, first_page: u32, end_page: u32) -> bool {
         self.has_recorded_pt_frames()
@@ -1110,18 +1065,13 @@ impl MemoryCore {
         FlatNullCause::Other
     }
 
-    /// `Memory::tlb_direct_write_ptr` plus the span's guest PHYSICAL address.
+    /// `Memory::tlb_direct_write_ptr` plus the span's guest physical address.
     ///
-    /// Identical admission — this is the same function, with the physical
-    /// address the TLB entry already holds returned alongside the host
-    /// pointer instead of discarded. A dyncore caller that commits a span
-    /// through the host pointer still owes the interpreter's decoded-
-    /// instruction cache a `drc_note_direct_ram_write`, which is keyed by
-    /// physical address; recovering it by host-pointer subtraction would
-    /// assume a RAM base this module deliberately does not publish.
-    ///
-    /// The physical page is the one recorded by `Memory::tlb_insert`, i.e.
-    /// already A20-masked, so the returned address needs no further folding.
+    /// Admission is identical. A caller committing through the host pointer
+    /// still owes the decoded-instruction cache a `drc_note_direct_ram_write`,
+    /// which is keyed by physical address. Recovering it by host-pointer
+    /// subtraction would assume a RAM base this module does not publish.
+    /// The returned physical address is already A20-masked by `tlb_insert`.
     #[inline]
     pub fn tlb_direct_write_span(
         &self,
@@ -1140,16 +1090,12 @@ impl MemoryCore {
         if cpl3 && entry.flags & TLB_FLAG_USER == 0 {
             return None;
         }
-        // A recorded paging-structure frame is refused alongside a watched
-        // page, and for the same reason: both must reach
-        // `Memory::smc_before_write`, which is where the EXP-N005 PT-write
-        // tripwire bumps `pt_write_epoch`. The two need SEPARATE guards here
-        // because `SoftwareTlb::record_pt_frame` nulls only the FLAT write
-        // views — the hashed `entry.host_write` this function reads survives,
-        // and re-fills keep publishing it — whereas `is_watched` was already
-        // consulted explicitly. Without the PT arm a guest editing its page
-        // tables through the drc direct-store leg committed silently, leaving
-        // stale chain-link premises (MDD-BUG-FLUX-00122, the FLUX-00086 class).
+        // Refuse recorded paging-structure frames alongside watched pages:
+        // both must reach `Memory::smc_before_write` for the PT-write tripwire.
+        // Separate guards are needed because `record_pt_frame` nulls only the
+        // flat write views; the hashed `entry.host_write` survives refills.
+        // Otherwise direct page-table edits can miss the epoch bump
+        // (MDD-BUG-FLUX-00122).
         if entry.host_write.is_null()
             || self.tlb().flat().is_watched(entry.physical_page)
             || self.tlb().flat().is_pt_frame(entry.physical_page)

@@ -649,7 +649,7 @@ fn test_vga_linear_address_calculation() {
     assert_eq!(pending[0].linear_address, (VIDEO_BASE + offset) as u32);
 }
 
-// ===== JIT Write Tracking Tests =====
+// ===== Write Tracking Without SMC Notification =====
 
 #[test]
 fn test_jit_write_u8_tracking_enabled() {
@@ -657,7 +657,7 @@ fn test_jit_write_u8_tracking_enabled() {
     mem.enable_write_tracking();
     mem.set_write_context(0x1000, 0x0100);
 
-    // Write using JIT method
+    // Write through the method that skips SMC tracking.
     let addr = 0x5000;
     mem.write_u8_jit(addr, 0xAB);
 
@@ -718,7 +718,7 @@ fn test_jit_write_captures_old_value() {
     mem.enable_write_tracking();
     mem.set_write_context(0x1000, 0x0100);
 
-    // Write new value via JIT
+    // Write a new value without SMC notification.
     mem.write_u8_jit(addr, 0xAB);
 
     let pending = mem.drain_pending_writes();
@@ -733,8 +733,8 @@ fn test_jit_write_video_memory_not_tracked() {
     mem.enable_write_tracking();
     mem.set_write_context(0x1000, 0x0100);
 
-    // Write to video memory via JIT should NOT be tracked
-    // (video memory tracking is handled separately via VGA planar functions)
+    // Video writes through this method are not tracked here;
+    // VGA planar functions handle video tracking separately.
     mem.write_u8_jit(VIDEO_BASE + 100, 0xAB);
 
     assert_eq!(mem.pending_write_count(), 0);
@@ -1123,9 +1123,8 @@ fn test_bind_smc_notifier_write_hook() {
 
     mem.bind_smc(Some(notifier.clone()));
     mem.set_smc_has_code_pages(true);
-    // The dyncore holds a block on page 2: production watches the page
-    // before any block on it can run, and `smc_before_write` only notifies
-    // for a watched page (see `smc_span_may_hold_code`).
+    // Watch page 2 so `smc_before_write` notifies for this write
+    // (see `smc_span_may_hold_code`).
     mem.set_page_watched(0x2345 >> 12, true);
     mem.write_u8(0x2345, 0x7A);
     notifier.notify_write_range(0x3000, 0x3002);
@@ -1217,10 +1216,9 @@ fn smc_before_write_notifies_a_write_straddling_into_a_watched_page() {
     assert_eq!(notifier.snapshot(), vec![(0x2FFE, 4), (0x4FFE, 4)]);
 }
 
-// ── EXP-N005: PT-write tripwire (dbx link keep) ─────────────────────────
+// ── PT-write tripwire ──────────────────────────────────────────────
 
-/// Read the supervisor write view slot for a linear page, exactly as an
-/// emitted store probe would.
+/// Read the supervisor write-view slot for a linear page.
 fn flat_w0_entry(mem: &Memory, linear_page: u32) -> u64 {
     unsafe {
         *mem.flat_views_ptr()
@@ -1383,9 +1381,8 @@ fn pt_record_of_unprobeable_frames_bumps_every_record() {
     assert_eq!(mem.dynrec_pt_write_epoch(), e0 + 3);
 }
 
-/// `has_recorded_pt_frame_in` answers for exactly the half-open page range it
-/// is given: DBX's VGA arms disarm on it, so a frame just outside the range
-/// must not count and one on either end page must.
+/// `has_recorded_pt_frame_in` checks exactly its half-open page range:
+/// a frame just outside must not count; one on either included end must.
 #[test]
 fn has_recorded_pt_frame_in_reports_only_frames_inside_the_half_open_range() {
     let mut mem = Memory::new();
@@ -1493,12 +1490,8 @@ fn translation_structure_epoch_covers_exactly_the_always_sever_causes() {
     );
 }
 
-/// EXP-N006 amendment N4: the dyncore's in-span io-seam guard watches
-/// ONLY `dynrec_translation_epoch`; it covers mid-span structure events
-/// solely because every structure-epoch bump site also bumps the
-/// translation epoch. This pins that coupling — a future structure-bump
-/// site that omits the translation-epoch bump would silently reopen the
-/// within-span window for the cross-span dispatch memo.
+/// Translation-structure changes must also advance the translation
+/// epoch, so consumers of that epoch observe every structure change.
 #[test]
 fn every_structure_epoch_bump_also_bumps_the_translation_epoch() {
     let mut mem = Memory::new();
@@ -1595,9 +1588,8 @@ fn recorded_pt_frame_nulls_write_views_like_a_watched_page() {
         .expect("O-SMC-ANYINSTANT with the PT fold");
 }
 
-/// `write_bytes_guest`'s bulk span still has to reach the SMC snoop — a
-/// sector read landing on a page that holds compiled code must invalidate
-/// it, exactly as the byte-by-byte path would.
+/// Bulk `write_bytes_guest` writes must reach the SMC snoop just like
+/// the byte-by-byte path.
 #[test]
 fn write_bytes_guest_bulk_span_notifies_the_smc_snoop_for_the_whole_span() {
     let mut mem = Memory::new();
@@ -1627,9 +1619,8 @@ fn write_bytes_guest_bulk_span_notifies_the_smc_snoop_for_the_whole_span() {
 // run, so a guest rendering entirely through admitted native stores was
 // killed while it was working correctly.
 
-/// The emitted inline corridor writes planes straight from generated code,
-/// so its count arrives as a fold rather than a per-store call. It must
-/// still reach the same counter the watchdog reads.
+/// VGA writes counted in bulk must reach the same engagement counter
+/// as per-store commits.
 #[test]
 fn folded_native_writes_reach_the_video_write_count() {
     let mut mem = Memory::new();

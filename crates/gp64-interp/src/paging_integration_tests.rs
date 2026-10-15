@@ -3969,7 +3969,7 @@ fn test_paging_mov_mem_r8_vga_planar_routes_to_planes_warm() {
 
 // ------------------------------------------------------------------
 // 25d. SMC notification fires for BOTH byte stores (cold fill and
-// warm TLB hit) — the dyncore snoop contract for a u8 fast path.
+// warm TLB hit) through the u8 fast path.
 // ------------------------------------------------------------------
 #[test]
 fn test_paging_smc_notification_mov_mem_r8_warm_tlb() {

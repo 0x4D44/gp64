@@ -231,12 +231,9 @@ fn direct_memory_policy_epoch_ignores_tlb_only_invalidations() {
 
 #[test]
 fn claim_hle_ems_frame_advances_direct_memory_policy_epoch() {
-    // Claiming the HLE EMS frame flips `direct_host_ram_range`'s answer for
-    // 0xE0000..0xF0000 (raw RAM -> EMS-backed), so it MUST advance the
-    // direct-memory-policy epoch -- the invalidation key for the
-    // interpreter's LOADIP fetch-proof cache and dynrec direct-page proofs.
-    // A regression to a bare `flush_tlb_full()` (which advances no epoch)
-    // would let a stale cached proof execute raw RAM against the frame.
+    // Claiming the EMS frame changes its direct-RAM admission. It must
+    // advance the memory-policy epoch for both the interpreter's fetch
+    // proofs and direct-page proofs; a bare TLB flush leaves them stale.
     let mut mem = Memory::new();
     assert_direct_epoch(&mem, 0);
     assert!(
@@ -254,11 +251,8 @@ fn claim_hle_ems_frame_advances_direct_memory_policy_epoch() {
     );
 }
 
-/// Every TLB-flush edge must carry the translation-policy epoch with it.
-/// The dyncore's translation premises (the drc fetch memo, the dbx link
-/// keep) treat `dynrec_translation_epoch` as covering the whole flush
-/// set, so a bare `tlb.flush()` here would launder a remapped EMS frame
-/// into a kept translation.
+/// Every TLB-flush edge must advance the translation-policy epoch so
+/// epoch-keyed consumers cannot retain a remapped EMS translation.
 #[test]
 fn an_ems_frame_invalidation_advances_the_translation_epoch() {
     let mut mem = Memory::new();
@@ -413,13 +407,9 @@ fn memory_policy_epoch_increments_on_vga_mapping_policy_changes() {
     assert_epoch(&mem, 4);
 }
 
-/// MDD-BUG-FLUX-00146 — `Memory` must be able to report that its bound
-/// notifier is holding a write record, without draining it.
-///
-/// This is what the drc runtime's nested-IO step asks after stepping: a
-/// device reached by that IN/OUT can write guest RAM holding compiled code,
-/// and that write is only snoop-recorded. Draining is the engine root's job,
-/// so asking here must not consume the record.
+/// MDD-BUG-FLUX-00146: reporting a pending notifier write must not drain
+/// it. A device can write guest RAM during I/O; checking for that write
+/// must leave the record available for its consumer.
 #[test]
 fn smc_snoop_pending_reports_a_recorded_write_without_draining_it() {
     // A notifier that reports pending exactly when it has seen a write.
@@ -460,8 +450,7 @@ fn smc_snoop_pending_reports_a_recorded_write_without_draining_it() {
     );
 }
 
-/// A notifier that keeps no pending state must never report pending, so the
-/// default cannot force a spurious native-chain exit.
+/// A stateless notifier's default must never report a pending write.
 #[test]
 fn smc_snoop_pending_is_false_for_a_stateless_notifier() {
     let mut mem = Memory::new();
@@ -2128,9 +2117,8 @@ fn test_sync_planes_to_chain4() {
         .all(|&byte| byte == 0xA5));
 }
 
-/// The JIT's direct-read limit tracks the private backing length through
-/// construction, shrink, growth within capacity and over-capacity growth,
-/// and a restriction holds only until the next resize republishes it.
+/// The direct-read limit tracks the backing length through construction,
+/// shrink and growth. Resize republishes any temporary restriction.
 #[test]
 fn raw_ram_limit_tracks_ram_backing_length() {
     let mut mem = Memory::new();

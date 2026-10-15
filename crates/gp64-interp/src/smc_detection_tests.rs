@@ -29,14 +29,10 @@ fn setup_with_smc(code: &[u8]) -> (Cpu, Memory, Arc<TestSmcNotify>) {
     let notifier = Arc::new(TestSmcNotify::default());
     mem.bind_smc(Some(notifier.clone()));
     mem.set_smc_has_code_pages(true);
-    // `Memory::smc_before_write` only notifies for a page the dyncore holds
-    // code on (its `CodePageHandler` peer). These tests are about WHICH
-    // interpreter write paths notify and HOW MANY times, not about the
-    // page policy, so declare the whole first megabyte — every address they
-    // address, ROM window included — as compiled-code pages. Keeping
-    // 0xF0000..0x100000 watched matters: it makes
-    // `test_smc_rom_write_no_notification` still prove the ROM DROP rather
-    // than pass because the page gate happened to close.
+    // `smc_before_write` only notifies for watched pages. Watch the whole
+    // first megabyte, including the ROM window, to test which interpreter
+    // write routes notify and how often. In particular, the ROM test must
+    // prove the write was dropped, not merely that the watch gate closed.
     for page in 0..0x100u32 {
         mem.set_page_watched(page, true);
     }
