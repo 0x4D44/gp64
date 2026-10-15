@@ -553,6 +553,7 @@ impl ApplicationHandler<Notice> for App {
             let (placement, attributes) = placement::Tracker::restore(
                 Window::default_attributes()
                     .with_title("gp64")
+                    .with_visible(false)
                     .with_fullscreen(
                         self.saved
                             .fullscreen
@@ -565,7 +566,11 @@ impl ApplicationHandler<Notice> for App {
             self.placement = Some(placement);
             set_icons(&window);
             self.presenter = Some(present::Presenter::new(window.clone())?);
-            self.window = Some(window);
+            self.window = Some(window.clone());
+            // A window shown before its first present is painted white while
+            // the presenter starts; show it only once it holds a black frame.
+            self.draw()?;
+            window.set_visible(true);
             self.redraw.invalidate();
             let (options, folder, program, script) =
                 self.launch.take().context("missing launch parameters")?;
