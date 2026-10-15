@@ -409,8 +409,9 @@ fn working_files() -> Vec<(String, Vec<u8>)> {
     working_files_at(&root())
 }
 fn working_files_at(repo: &Path) -> Vec<(String, Vec<u8>)> {
-    // Scan what will be committed without staging it. Ignored local scratch and
-    // build output remain excluded; all tracked files are always included.
+    // Scan current tracked and non-ignored untracked files without staging.
+    // Read unstaged deletions from the index, so every tracked file remains
+    // covered. Ignored local scratch and build output remain excluded.
     let mut paths = BTreeSet::new();
     for args in [
         vec!["ls-files", "-z"],
@@ -423,10 +424,23 @@ fn working_files_at(repo: &Path) -> Vec<(String, Vec<u8>)> {
             paths.insert(String::from_utf8(path.to_vec()).expect("UTF-8 path"));
         }
     }
+    let deleted: BTreeSet<_> = git_at(repo, &["ls-files", "--deleted", "-z"])
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|path| String::from_utf8(path.to_vec()).expect("UTF-8 path"))
+        .collect();
     paths
         .into_iter()
         .map(|path| {
-            let data = fs::read(repo.join(&path)).unwrap_or_else(|e| panic!("read {path}: {e}"));
+            let data = match fs::read(repo.join(&path)) {
+                Ok(data) => data,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound && deleted.contains(&path) =>
+                {
+                    git_at(repo, &["cat-file", "blob", &format!(":{path}")])
+                }
+                Err(error) => panic!("read {path}: {error}"),
+            };
             (path, data)
         })
         .collect()
@@ -1209,6 +1223,46 @@ fn generated_numeric_hex_bytes_keep_ascii_token_boundaries() {
             );
         }
     }
+}
+
+#[test]
+fn working_files_scan_unstaged_deletions_from_index_and_history() {
+    let fixture = history_path_fixture("working-deletion", "sha1");
+    let repo = &fixture.0;
+    let removed = "removed file.txt";
+    let original = b"independent generated original";
+    seed_history_paths(repo, removed, original);
+    let modified = b"independent current edit";
+    let untracked = b"independent new file";
+    fs::write(repo.join(removed), modified).unwrap();
+    fs::write(repo.join("new file.txt"), untracked).unwrap();
+    assert_eq!(
+        working_files_at(repo),
+        vec![
+            ("new file.txt".to_owned(), untracked.to_vec()),
+            (removed.to_owned(), modified.to_vec()),
+        ]
+    );
+    git_at(repo, &["add", "--", removed]);
+    fs::remove_file(repo.join(removed)).unwrap();
+    assert_eq!(
+        working_files_at(repo),
+        vec![
+            ("new file.txt".to_owned(), untracked.to_vec()),
+            (removed.to_owned(), modified.to_vec()),
+        ]
+    );
+    let mut seen_in_history = false;
+    history_at(repo, |path, _oid, bytes| {
+        if path == removed {
+            assert_eq!(bytes, original);
+            seen_in_history = true;
+        }
+    });
+    assert!(
+        seen_in_history,
+        "deleted file must still be scanned in history"
+    );
 }
 
 #[test]
